@@ -541,6 +541,11 @@ export default function Home() {
     resetNoteForm();
   }
 
+  function cancelEditor() {
+    setEditorMode("hidden");
+    resetNoteForm();
+  }
+
   function fillEditor(calendarEvent: CalendarEvent) {
     setEditingEventId(calendarEvent.id);
     setEditorMode("edit");
@@ -1334,13 +1339,18 @@ export default function Home() {
                   </label>
                 ) : null}
 
-                <button className="primary-button" disabled={dataLoading} type="submit">
-                  {dataLoading
-                    ? "Guardando..."
-                    : editorMode === "edit" && selectedEvent
-                      ? "Guardar cambios"
-                      : "Guardar nota"}
-                </button>
+                    <div className="note-action-row">
+                      <button className="primary-button" disabled={dataLoading} type="submit">
+                        {dataLoading
+                          ? "Guardando..."
+                          : editorMode === "edit" && selectedEvent
+                            ? "Guardar cambios"
+                            : "Guardar nota"}
+                      </button>
+                      <button className="secondary-button" type="button" onClick={cancelEditor}>
+                        Cancelar
+                      </button>
+                    </div>
                   </form>
                 </div>
               ) : null}
