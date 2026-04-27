@@ -71,6 +71,38 @@ button:disabled:hover {
   text-transform: uppercase;
 }
 
+.calendar-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.calendar-title-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.calendar-name-input {
+  min-height: 44px;
+  min-width: min(100%, 320px);
+  border: 1px solid #3b372f;
+  border-radius: 8px;
+  background: #12110f;
+  color: #fffaf0;
+  font-size: 28px;
+  font-weight: 900;
+  outline: none;
+  padding: 7px 10px;
+}
+
+.calendar-name-input:focus {
+  border-color: #44d7a8;
+  box-shadow: 0 0 0 3px rgba(68, 215, 168, 0.14);
+}
+
 .status-pill,
 .small-button {
   border: 1px solid #34312b;
@@ -203,6 +235,17 @@ button:disabled:hover {
   font-size: 14px;
   font-weight: 900;
   padding: 12px;
+}
+
+.note-action-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.editor-panel {
+  border-top: 1px solid #34312b;
+  padding-top: 18px;
 }
 
 .calendar-day {
@@ -368,6 +411,15 @@ button:disabled:hover {
   text-decoration: line-through;
 }
 
+.saved-note-card {
+  cursor: default;
+}
+
+.saved-note-card[data-selected="true"] {
+  border-color: #44d7a8;
+  background: #20372d;
+}
+
 .empty-state {
   border: 1px dashed #4a453c;
   border-radius: 8px;
@@ -405,5 +457,13 @@ button:disabled:hover {
 
   .view-switch button {
     min-width: 0;
+  }
+
+  .calendar-name-input {
+    font-size: 22px;
+  }
+
+  .note-action-row {
+    grid-template-columns: 1fr;
   }
 }

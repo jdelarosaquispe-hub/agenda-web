@@ -33,8 +33,11 @@ type AgendaEventRow = {
 type EventsByDate = Record<string, CalendarEvent[]>;
 type CalendarView = "month" | "week";
 type DuplicateMode = "next-days" | "specific-date";
+type EditorMode = "create" | "edit";
 
 const STORAGE_KEY = "agenda-web-events";
+const CALENDAR_NAME_KEY = "agenda-web-calendar-name";
+const DEFAULT_CALENDAR_NAME = "Calendario personal";
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseKey =
   process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ??
@@ -206,6 +209,32 @@ function setSingleEventForDate(events: EventsByDate, date: string, event: Calend
   };
 }
 
+function addEventToDate(events: EventsByDate, date: string, event: CalendarEvent) {
+  return {
+    ...events,
+    [date]: [...(events[date] ?? []), event].sort((a, b) => a.time.localeCompare(b.time)),
+  };
+}
+
+function replaceEventInDate(
+  events: EventsByDate,
+  date: string,
+  eventId: string,
+  nextEvent: CalendarEvent,
+) {
+  const updatedEvents = (events[date] ?? []).map((event) =>
+    event.id === eventId ? nextEvent : event,
+  );
+  const eventExists = updatedEvents.some((event) => event.id === nextEvent.id);
+
+  return {
+    ...events,
+    [date]: (eventExists ? updatedEvents : [...updatedEvents, nextEvent]).sort((a, b) =>
+      a.time.localeCompare(b.time),
+    ),
+  };
+}
+
 function updateEventDone(events: EventsByDate, date: string, eventId: string, done: boolean) {
   return {
     ...events,
@@ -300,7 +329,11 @@ export default function Home() {
   const [selectedDate, setSelectedDate] = useState(todayKey);
   const [events, setEvents] = useState<EventsByDate>({});
   const [session, setSession] = useState<Session | null>(null);
+  const [calendarName, setCalendarName] = useState(DEFAULT_CALENDAR_NAME);
+  const [calendarNameDraft, setCalendarNameDraft] = useState(DEFAULT_CALENDAR_NAME);
+  const [isEditingCalendarName, setIsEditingCalendarName] = useState(false);
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
+  const [editorMode, setEditorMode] = useState<EditorMode>("create");
   const [title, setTitle] = useState("");
   const [time, setTime] = useState("09:00");
   const [category, setCategory] = useState<CalendarEvent["category"]>("Trabajo");
@@ -322,7 +355,7 @@ export default function Home() {
   const monthDays = useMemo(() => createMonthDays(monthDate), [monthDate]);
   const weekDays = useMemo(() => createWeekDays(selectedDateObject), [selectedDateObject]);
   const selectedEvents = events[selectedDate] ?? [];
-  const selectedEvent = selectedEvents.find((event) => event.id === editingEventId) ?? selectedEvents[0] ?? null;
+  const selectedEvent = selectedEvents.find((event) => event.id === editingEventId) ?? null;
   const primarySelectedEvent = selectedEvents[0] ?? null;
   const weekRange = `${formatShortDate(weekDays[0])} - ${formatShortDate(weekDays[6])}`;
   const userId = session?.user.id;
@@ -332,6 +365,13 @@ export default function Home() {
 
     async function boot() {
       await Promise.resolve();
+
+      const savedCalendarName = window.localStorage.getItem(CALENDAR_NAME_KEY);
+
+      if (savedCalendarName?.trim()) {
+        setCalendarName(savedCalendarName.trim());
+        setCalendarNameDraft(savedCalendarName.trim());
+      }
 
       if (!supabase) {
         const savedEvents = window.localStorage.getItem(STORAGE_KEY);
@@ -379,6 +419,12 @@ export default function Home() {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(events));
     }
   }, [events, isMounted, supabase]);
+
+  useEffect(() => {
+    if (isMounted) {
+      window.localStorage.setItem(CALENDAR_NAME_KEY, calendarName);
+    }
+  }, [calendarName, isMounted]);
 
   useEffect(() => {
     if (!supabase || !userId) {
@@ -430,6 +476,7 @@ export default function Home() {
 
       if (primarySelectedEvent) {
         setEditingEventId(primarySelectedEvent.id);
+        setEditorMode("edit");
         setTitle(primarySelectedEvent.title);
         setTime(primarySelectedEvent.time);
         setCategory(primarySelectedEvent.category);
@@ -440,6 +487,7 @@ export default function Home() {
         );
       } else {
         setEditingEventId(null);
+        setEditorMode("create");
         setTitle("");
         setTime("09:00");
         setCategory("Trabajo");
@@ -485,8 +533,27 @@ export default function Home() {
     selectDate(now);
   }
 
+  function saveCalendarName(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const nextName = calendarNameDraft.trim() || DEFAULT_CALENDAR_NAME;
+    setCalendarName(nextName);
+    setCalendarNameDraft(nextName);
+    setIsEditingCalendarName(false);
+  }
+
+  function startNewNote() {
+    setEditorMode("create");
+    setTitle("");
+    setTime("09:00");
+    setCategory("Trabajo");
+    setNotes("");
+    setHasReminder(false);
+    setReminderAt(defaultReminderAt(selectedDate));
+  }
+
   function fillEditor(calendarEvent: CalendarEvent) {
     setEditingEventId(calendarEvent.id);
+    setEditorMode("edit");
     setTitle(calendarEvent.title);
     setTime(calendarEvent.time);
     setCategory(calendarEvent.category);
@@ -495,7 +562,17 @@ export default function Home() {
     setReminderAt(calendarEvent.reminderAt || defaultReminderAt(selectedDate, calendarEvent.time));
   }
 
-  function buildDraft(): EventDraft | null {
+  function editSelectedNote() {
+    if (selectedEvent) {
+      fillEditor(selectedEvent);
+    }
+  }
+
+  function selectSavedNote(calendarEvent: CalendarEvent) {
+    setEditingEventId(calendarEvent.id);
+  }
+
+  function buildDraft(done: boolean): EventDraft | null {
     if (!title.trim()) {
       return null;
     }
@@ -505,7 +582,7 @@ export default function Home() {
       time,
       category,
       notes: notes.trim(),
-      done: selectedEvent?.done ?? false,
+      done,
       hasReminder,
       reminderAt: hasReminder ? reminderAt || defaultReminderAt(selectedDate, time) : "",
     };
@@ -580,13 +657,13 @@ export default function Home() {
   async function saveEvent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    const draft = buildDraft();
+    const existingEvent = editorMode === "edit" ? selectedEvent : null;
+    const draft = buildDraft(existingEvent?.done ?? false);
 
     if (!draft) {
       return;
     }
 
-    const existingEvent = selectedEvent ?? primarySelectedEvent;
     const localEvent: CalendarEvent = {
       ...draft,
       id: existingEvent?.id ?? crypto.randomUUID(),
@@ -611,15 +688,10 @@ export default function Home() {
           return;
         }
 
-        const cleanupError = await deleteExtraRemoteEvents(selectedDate, existingEvent.id);
-
-        if (cleanupError) {
-          setSyncMessage(`La nota se guardo, pero no se limpiaron duplicados: ${cleanupError.message}`);
-        }
-
         const savedEvent = rowToEvent(data as AgendaEventRow);
-        setEvents((current) => setSingleEventForDate(current, selectedDate, savedEvent));
+        setEvents((current) => replaceEventInDate(current, selectedDate, existingEvent.id, savedEvent));
         setEditingEventId(savedEvent.id);
+        setEditorMode("edit");
         setDataLoading(false);
         return;
       }
@@ -641,13 +713,19 @@ export default function Home() {
       }
 
       const savedEvent = rowToEvent(data as AgendaEventRow);
-      setEvents((current) => setSingleEventForDate(current, selectedDate, savedEvent));
+      setEvents((current) => addEventToDate(current, selectedDate, savedEvent));
       setEditingEventId(savedEvent.id);
+      setEditorMode("edit");
       return;
     }
 
-    setEvents((current) => setSingleEventForDate(current, selectedDate, localEvent));
+    setEvents((current) =>
+      existingEvent
+        ? replaceEventInDate(current, selectedDate, existingEvent.id, localEvent)
+        : addEventToDate(current, selectedDate, localEvent),
+    );
     setEditingEventId(localEvent.id);
+    setEditorMode("edit");
   }
 
   async function saveDuplicateToDate(targetDate: string, draft: EventDraft) {
@@ -792,6 +870,17 @@ export default function Home() {
     }
 
     setEvents((current) => removeEventFromDate(current, date, eventId));
+
+    if (date === selectedDate && editingEventId === eventId) {
+      const nextSelectedEvent = (events[date] ?? []).find((calendarEvent) => calendarEvent.id !== eventId);
+
+      if (nextSelectedEvent) {
+        fillEditor(nextSelectedEvent);
+      } else {
+        setEditingEventId(null);
+        startNewNote();
+      }
+    }
   }
 
   if (supabase && isMounted && !session) {
@@ -852,9 +941,43 @@ export default function Home() {
         <header className="app-shell flex flex-col gap-5 px-5 py-5 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <p className="eyebrow">Agenda web</p>
-            <h1 className="mt-1 text-3xl font-bold text-[#fffaf0] sm:text-4xl">
-              Calendario personal
-            </h1>
+            {isEditingCalendarName ? (
+              <form className="calendar-title-form mt-2" onSubmit={saveCalendarName}>
+                <input
+                  className="calendar-name-input"
+                  value={calendarNameDraft}
+                  onChange={(event) => setCalendarNameDraft(event.target.value)}
+                  placeholder={DEFAULT_CALENDAR_NAME}
+                  autoFocus
+                />
+                <button className="small-button" type="submit">
+                  Guardar
+                </button>
+                <button
+                  className="small-button"
+                  type="button"
+                  onClick={() => {
+                    setCalendarNameDraft(calendarName);
+                    setIsEditingCalendarName(false);
+                  }}
+                >
+                  Cancelar
+                </button>
+              </form>
+            ) : (
+              <div className="calendar-title-row mt-1">
+                <h1 className="text-3xl font-bold text-[#fffaf0] sm:text-4xl">
+                  {calendarName}
+                </h1>
+                <button
+                  className="small-button"
+                  type="button"
+                  onClick={() => setIsEditingCalendarName(true)}
+                >
+                  Editar nombre
+                </button>
+              </div>
+            )}
             <p className="mt-2 text-sm text-[#a7a29a]">
               Dia seleccionado: {formatLongDate(selectedDate)}
             </p>
@@ -949,7 +1072,7 @@ export default function Home() {
                     const isCurrentMonth = date.getMonth() === monthDate.getMonth();
                     const isSelected = key === selectedDate;
                     const isToday = key === todayKey;
-                    const dayEvent = events[key]?.[0] ?? null;
+                    const dayEvents = events[key] ?? [];
 
                     return (
                       <button
@@ -963,10 +1086,18 @@ export default function Home() {
                         onClick={() => selectDate(date)}
                       >
                         <span className={isToday ? "today-pill" : ""}>{date.getDate()}</span>
-                        {dayEvent ? (
+                        {dayEvents.length > 0 ? (
                           <span className="day-note-mark">
-                            <span className="event-dot" data-category={dayEvent.category} />
-                            {dayEvent.hasReminder ? <span className="reminder-dot" /> : null}
+                            {dayEvents.slice(0, 3).map((dayEvent) => (
+                              <span
+                                className="event-dot"
+                                data-category={dayEvent.category}
+                                key={dayEvent.id}
+                              />
+                            ))}
+                            {dayEvents.some((dayEvent) => dayEvent.hasReminder) ? (
+                              <span className="reminder-dot" />
+                            ) : null}
                           </span>
                         ) : null}
                       </button>
@@ -1034,11 +1165,89 @@ export default function Home() {
           <aside className="flex flex-col gap-6">
             <section className="app-shell p-5">
               <p className="eyebrow">{formatLongDate(selectedDate)}</p>
-              <h2 className="mt-1 text-2xl font-bold text-[#fffaf0]">
-                {selectedEvent ? "Editar nota" : "Nueva nota"}
-              </h2>
+              <h2 className="mt-1 text-2xl font-bold text-[#fffaf0]">Editar notas</h2>
 
-              <form className="mt-5 flex flex-col gap-4" onSubmit={saveEvent}>
+              <div className="mt-4 flex flex-col gap-3">
+                {selectedEvents.length === 0 ? (
+                  <p className="empty-state">No hay notas guardadas para este dia.</p>
+                ) : (
+                  selectedEvents.map((calendarEvent) => {
+                    const isSelectedNote = calendarEvent.id === editingEventId;
+
+                    return (
+                      <article
+                        className="event-card saved-note-card"
+                        data-done={calendarEvent.done}
+                        data-selected={isSelectedNote}
+                        key={calendarEvent.id}
+                      >
+                        <div className="flex items-start gap-3">
+                          <input
+                            aria-label={`Seleccionar ${calendarEvent.title}`}
+                            checked={isSelectedNote}
+                            className="mt-1 h-4 w-4 accent-[#44d7a8]"
+                            name="selected-note"
+                            type="radio"
+                            onChange={() => selectSavedNote(calendarEvent)}
+                          />
+                          <input
+                            aria-label="Marcar como completado"
+                            checked={calendarEvent.done}
+                            className="mt-1 h-4 w-4 accent-[#44d7a8]"
+                            type="checkbox"
+                            onChange={() => toggleDone(selectedDate, calendarEvent.id)}
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="font-bold text-[#fffaf0]">{calendarEvent.title}</p>
+                              <span className="category-chip" data-category={calendarEvent.category}>
+                                {calendarEvent.category}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-sm font-semibold text-[#a7a29a]">{calendarEvent.time}</p>
+                            {calendarEvent.hasReminder && calendarEvent.reminderAt ? (
+                              <p className="mt-1 text-sm font-semibold text-[#ffd166]">
+                                Aviso {formatReminder(calendarEvent.reminderAt)}
+                              </p>
+                            ) : null}
+                            {calendarEvent.notes ? (
+                              <p className="mt-2 text-sm leading-6 text-[#c7c1b6]">{calendarEvent.notes}</p>
+                            ) : null}
+                          </div>
+                          <button
+                            className="danger-button"
+                            type="button"
+                            onClick={() => deleteEvent(selectedDate, calendarEvent.id)}
+                          >
+                            Eliminar
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })
+                )}
+              </div>
+
+              <div className="note-action-row mt-4">
+                <button className="secondary-button" type="button" onClick={startNewNote}>
+                  Nueva nota
+                </button>
+                <button
+                  className="secondary-button"
+                  disabled={!selectedEvent}
+                  type="button"
+                  onClick={editSelectedNote}
+                >
+                  Modificar seleccionada
+                </button>
+              </div>
+
+              <div className="editor-panel mt-5">
+                <h3 className="text-lg font-bold text-[#fffaf0]">
+                  {editorMode === "edit" && selectedEvent ? "Modificar nota seleccionada" : "Nueva nota"}
+                </h3>
+
+              <form className="mt-4 flex flex-col gap-4" onSubmit={saveEvent}>
                 <label className="field-label">
                   Titulo
                   <input
@@ -1122,9 +1331,14 @@ export default function Home() {
                 ) : null}
 
                 <button className="primary-button" disabled={dataLoading} type="submit">
-                  {dataLoading ? "Guardando..." : selectedEvent ? "Guardar cambios" : "Guardar nota"}
+                  {dataLoading
+                    ? "Guardando..."
+                    : editorMode === "edit" && selectedEvent
+                      ? "Guardar cambios"
+                      : "Guardar nota"}
                 </button>
               </form>
+              </div>
             </section>
 
             <section className="app-shell p-5">
@@ -1185,63 +1399,6 @@ export default function Home() {
               </div>
             </section>
 
-            <section className="app-shell p-5">
-              <h2 className="text-xl font-bold text-[#fffaf0]">Notas guardadas</h2>
-
-              <div className="mt-4 flex flex-col gap-3">
-                {selectedEvents.length === 0 ? (
-                  <p className="empty-state">No hay nota para este dia.</p>
-                ) : (
-                  selectedEvents.map((calendarEvent) => (
-                    <article className="event-card" data-done={calendarEvent.done} key={calendarEvent.id}>
-                      <div className="flex items-start gap-3">
-                        <input
-                          aria-label="Marcar como completado"
-                          checked={calendarEvent.done}
-                          className="mt-1 h-4 w-4 accent-[#44d7a8]"
-                          type="checkbox"
-                          onChange={() => toggleDone(selectedDate, calendarEvent.id)}
-                        />
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <p className="font-bold text-[#fffaf0]">{calendarEvent.title}</p>
-                            <span className="category-chip" data-category={calendarEvent.category}>
-                              {calendarEvent.category}
-                            </span>
-                          </div>
-                          <p className="mt-1 text-sm font-semibold text-[#a7a29a]">{calendarEvent.time}</p>
-                          {calendarEvent.hasReminder && calendarEvent.reminderAt ? (
-                            <p className="mt-1 text-sm font-semibold text-[#ffd166]">
-                              Aviso {formatReminder(calendarEvent.reminderAt)}
-                            </p>
-                          ) : null}
-                          {calendarEvent.notes ? (
-                            <p className="mt-2 text-sm leading-6 text-[#c7c1b6]">{calendarEvent.notes}</p>
-                          ) : null}
-
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            <button
-                              className="small-button"
-                              type="button"
-                              onClick={() => fillEditor(calendarEvent)}
-                            >
-                              Editar
-                            </button>
-                            <button
-                              className="danger-button"
-                              type="button"
-                              onClick={() => deleteEvent(selectedDate, calendarEvent.id)}
-                            >
-                              Eliminar
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    </article>
-                  ))
-                )}
-              </div>
-            </section>
           </aside>
         </div>
       </section>
