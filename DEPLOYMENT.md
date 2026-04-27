@@ -43,4 +43,4 @@ npm.cmd run dev
 ## 4. Uso
 
 Abre la URL de Vercel desde PC o celular, inicia sesion con tu correo y revisa el enlace que llega por email.
-Tus eventos quedaran guardados en Supabase y se veran desde cualquier dispositivo donde entres con el mismo correo.
+Tus notas quedaran guardadas en Supabase y se veran desde cualquier dispositivo donde entres con el mismo correo.

@@ -2,14 +2,28 @@ create table if not exists public.agenda_events (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
   date date not null,
-  title text not null,
+  title text not null default 'Nota',
   event_time time not null default '09:00',
   category text not null check (category in ('Trabajo', 'Personal', 'Estudio', 'Salud')),
   notes text not null default '',
   done boolean not null default false,
+  has_reminder boolean not null default false,
+  reminder_at timestamptz,
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now())
 );
+
+alter table public.agenda_events
+  add column if not exists title text not null default 'Nota';
+
+alter table public.agenda_events
+  add column if not exists has_reminder boolean not null default false;
+
+alter table public.agenda_events
+  add column if not exists reminder_at timestamptz;
+
+alter table public.agenda_events
+  add column if not exists updated_at timestamptz not null default timezone('utc', now());
 
 create index if not exists agenda_events_user_date_idx
   on public.agenda_events (user_id, date, event_time);

@@ -10,7 +10,12 @@ type CalendarEvent = {
   category: "Trabajo" | "Personal" | "Estudio" | "Salud";
   notes: string;
   done: boolean;
+  hasReminder: boolean;
+  reminderAt: string;
+  updatedAt?: string;
 };
+
+type EventDraft = Omit<CalendarEvent, "id" | "updatedAt">;
 
 type AgendaEventRow = {
   id: string;
@@ -20,10 +25,14 @@ type AgendaEventRow = {
   category: CalendarEvent["category"];
   notes: string | null;
   done: boolean;
+  has_reminder: boolean | null;
+  reminder_at: string | null;
+  updated_at: string | null;
 };
 
 type EventsByDate = Record<string, CalendarEvent[]>;
 type CalendarView = "month" | "week";
+type DuplicateMode = "next-days" | "specific-date";
 
 const STORAGE_KEY = "agenda-web-events";
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -39,6 +48,9 @@ const categories: CalendarEvent["category"][] = [
   "Salud",
 ];
 
+const rowSelect =
+  "id,date,title,event_time,category,notes,done,has_reminder,reminder_at,updated_at";
+
 function toDateKey(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -49,6 +61,12 @@ function toDateKey(date: Date) {
 function fromDateKey(key: string) {
   const [year, month, day] = key.split("-").map(Number);
   return new Date(year, month - 1, day);
+}
+
+function addDaysToDateKey(key: string, amount: number) {
+  const date = fromDateKey(key);
+  date.setDate(date.getDate() + amount);
+  return toDateKey(date);
 }
 
 function formatMonth(date: Date) {
@@ -71,6 +89,32 @@ function formatShortDate(date: Date) {
     day: "numeric",
     month: "short",
   }).format(date);
+}
+
+function formatDateTimeForInput(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day}T${hour}:${minute}`;
+}
+
+function defaultReminderAt(dateKey: string, time = "09:00") {
+  return `${dateKey}T${time}`;
+}
+
+function formatReminder(value: string) {
+  if (!value) {
+    return "";
+  }
+
+  return new Intl.DateTimeFormat("es", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
 }
 
 function startOfWeek(date: Date) {
@@ -110,21 +154,39 @@ function createMonthDays(monthDate: Date) {
   return days;
 }
 
-function getEventsForDays(events: EventsByDate, days: Date[]) {
-  return days.flatMap((date) => {
-    const key = toDateKey(date);
-    return (events[key] ?? []).map((event) => ({ date: key, event }));
-  });
+function normalizeCategory(value: unknown): CalendarEvent["category"] {
+  return categories.includes(value as CalendarEvent["category"])
+    ? (value as CalendarEvent["category"])
+    : "Trabajo";
+}
+
+function normalizeStoredEvent(event: Partial<CalendarEvent>) {
+  const time = typeof event.time === "string" && event.time ? event.time : "09:00";
+
+  return {
+    id: typeof event.id === "string" ? event.id : crypto.randomUUID(),
+    title: typeof event.title === "string" && event.title ? event.title : "Nota",
+    time,
+    category: normalizeCategory(event.category),
+    notes: typeof event.notes === "string" ? event.notes : "",
+    done: Boolean(event.done),
+    hasReminder: Boolean(event.hasReminder),
+    reminderAt: typeof event.reminderAt === "string" ? event.reminderAt : "",
+    updatedAt: typeof event.updatedAt === "string" ? event.updatedAt : undefined,
+  };
 }
 
 function rowToEvent(row: AgendaEventRow): CalendarEvent {
   return {
     id: row.id,
     title: row.title,
-    time: row.event_time.slice(0, 5),
+    time: (row.event_time ?? "09:00").slice(0, 5),
     category: row.category,
     notes: row.notes ?? "",
     done: row.done,
+    hasReminder: Boolean(row.has_reminder),
+    reminderAt: row.reminder_at ? formatDateTimeForInput(new Date(row.reminder_at)) : "",
+    updatedAt: row.updated_at ?? undefined,
   };
 }
 
@@ -137,10 +199,10 @@ function rowsToEvents(rows: AgendaEventRow[]) {
   }, {});
 }
 
-function addEventToDate(events: EventsByDate, date: string, event: CalendarEvent) {
+function setSingleEventForDate(events: EventsByDate, date: string, event: CalendarEvent) {
   return {
     ...events,
-    [date]: [...(events[date] ?? []), event].sort((a, b) => a.time.localeCompare(b.time)),
+    [date]: [event],
   };
 }
 
@@ -172,10 +234,56 @@ function parseLocalEvents(savedEvents: string | null) {
   }
 
   try {
-    return JSON.parse(savedEvents) as EventsByDate;
+    const parsed = JSON.parse(savedEvents) as Record<string, Partial<CalendarEvent>[]>;
+
+    return Object.entries(parsed).reduce<EventsByDate>((calendarEvents, [date, dayEvents]) => {
+      if (Array.isArray(dayEvents)) {
+        calendarEvents[date] = dayEvents.map(normalizeStoredEvent).sort((a, b) =>
+          a.time.localeCompare(b.time),
+        );
+      }
+
+      return calendarEvents;
+    }, {});
   } catch {
     return {};
   }
+}
+
+function reminderToDatabase(hasReminder: boolean, reminderAt: string) {
+  if (!hasReminder || !reminderAt) {
+    return null;
+  }
+
+  const date = new Date(reminderAt);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function makeEventPayload(date: string, draft: EventDraft) {
+  return {
+    date,
+    title: draft.title,
+    event_time: draft.time,
+    category: draft.category,
+    notes: draft.notes,
+    done: draft.done,
+    has_reminder: draft.hasReminder,
+    reminder_at: reminderToDatabase(draft.hasReminder, draft.reminderAt),
+  };
+}
+
+function makeDraftForDate(event: CalendarEvent, date: string): EventDraft {
+  const reminderTime = event.reminderAt ? event.reminderAt.slice(11, 16) : event.time;
+
+  return {
+    title: event.title,
+    time: event.time,
+    category: event.category,
+    notes: event.notes,
+    done: false,
+    hasReminder: event.hasReminder,
+    reminderAt: event.hasReminder ? defaultReminderAt(date, reminderTime) : "",
+  };
 }
 
 export default function Home() {
@@ -192,10 +300,17 @@ export default function Home() {
   const [selectedDate, setSelectedDate] = useState(todayKey);
   const [events, setEvents] = useState<EventsByDate>({});
   const [session, setSession] = useState<Session | null>(null);
+  const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [time, setTime] = useState("09:00");
   const [category, setCategory] = useState<CalendarEvent["category"]>("Trabajo");
   const [notes, setNotes] = useState("");
+  const [hasReminder, setHasReminder] = useState(false);
+  const [reminderAt, setReminderAt] = useState(defaultReminderAt(todayKey));
+  const [duplicateMode, setDuplicateMode] = useState<DuplicateMode>("next-days");
+  const [duplicateDays, setDuplicateDays] = useState("1");
+  const [duplicateDate, setDuplicateDate] = useState(addDaysToDateKey(todayKey, 1));
+  const [duplicateMessage, setDuplicateMessage] = useState("");
   const [authEmail, setAuthEmail] = useState("");
   const [authMessage, setAuthMessage] = useState("");
   const [syncMessage, setSyncMessage] = useState("");
@@ -207,9 +322,8 @@ export default function Home() {
   const monthDays = useMemo(() => createMonthDays(monthDate), [monthDate]);
   const weekDays = useMemo(() => createWeekDays(selectedDateObject), [selectedDateObject]);
   const selectedEvents = events[selectedDate] ?? [];
-  const weekEvents = useMemo(() => getEventsForDays(events, weekDays), [events, weekDays]);
-  const completedWeekEvents = weekEvents.filter(({ event }) => event.done).length;
-  const activeWeekDays = weekDays.filter((date) => (events[toDateKey(date)] ?? []).length > 0).length;
+  const selectedEvent = selectedEvents.find((event) => event.id === editingEventId) ?? selectedEvents[0] ?? null;
+  const primarySelectedEvent = selectedEvents[0] ?? null;
   const weekRange = `${formatShortDate(weekDays[0])} - ${formatShortDate(weekDays[6])}`;
   const userId = session?.user.id;
 
@@ -280,7 +394,7 @@ export default function Home() {
 
       const { data, error } = await client
         .from("agenda_events")
-        .select("id,date,title,event_time,category,notes,done")
+        .select(rowSelect)
         .order("date", { ascending: true })
         .order("event_time", { ascending: true });
 
@@ -289,7 +403,7 @@ export default function Home() {
       }
 
       if (error) {
-        setSyncMessage(`No se pudieron cargar tus eventos: ${error.message}`);
+        setSyncMessage(`No se pudieron cargar tus notas: ${error.message}`);
       } else {
         setEvents(rowsToEvents((data ?? []) as AgendaEventRow[]));
       }
@@ -303,6 +417,47 @@ export default function Home() {
       ignore = true;
     };
   }, [supabase, userId]);
+
+  useEffect(() => {
+    let ignore = false;
+
+    async function syncEditor() {
+      await Promise.resolve();
+
+      if (ignore) {
+        return;
+      }
+
+      if (primarySelectedEvent) {
+        setEditingEventId(primarySelectedEvent.id);
+        setTitle(primarySelectedEvent.title);
+        setTime(primarySelectedEvent.time);
+        setCategory(primarySelectedEvent.category);
+        setNotes(primarySelectedEvent.notes);
+        setHasReminder(primarySelectedEvent.hasReminder);
+        setReminderAt(
+          primarySelectedEvent.reminderAt || defaultReminderAt(selectedDate, primarySelectedEvent.time),
+        );
+      } else {
+        setEditingEventId(null);
+        setTitle("");
+        setTime("09:00");
+        setCategory("Trabajo");
+        setNotes("");
+        setHasReminder(false);
+        setReminderAt(defaultReminderAt(selectedDate));
+      }
+
+      setDuplicateDate(addDaysToDateKey(selectedDate, 1));
+      setDuplicateMessage("");
+    }
+
+    void syncEditor();
+
+    return () => {
+      ignore = true;
+    };
+  }, [primarySelectedEvent, selectedDate]);
 
   function selectDate(date: Date) {
     setSelectedDate(toDateKey(date));
@@ -328,6 +483,63 @@ export default function Home() {
   function goToToday() {
     const now = new Date();
     selectDate(now);
+  }
+
+  function fillEditor(calendarEvent: CalendarEvent) {
+    setEditingEventId(calendarEvent.id);
+    setTitle(calendarEvent.title);
+    setTime(calendarEvent.time);
+    setCategory(calendarEvent.category);
+    setNotes(calendarEvent.notes);
+    setHasReminder(calendarEvent.hasReminder);
+    setReminderAt(calendarEvent.reminderAt || defaultReminderAt(selectedDate, calendarEvent.time));
+  }
+
+  function buildDraft(): EventDraft | null {
+    if (!title.trim()) {
+      return null;
+    }
+
+    return {
+      title: title.trim(),
+      time,
+      category,
+      notes: notes.trim(),
+      done: selectedEvent?.done ?? false,
+      hasReminder,
+      reminderAt: hasReminder ? reminderAt || defaultReminderAt(selectedDate, time) : "",
+    };
+  }
+
+  function buildDuplicateTargets() {
+    if (duplicateMode === "specific-date") {
+      return duplicateDate && duplicateDate !== selectedDate ? [duplicateDate] : [];
+    }
+
+    const days = Math.min(30, Math.max(1, Number.parseInt(duplicateDays, 10) || 1));
+    return Array.from({ length: days }, (_, index) => addDaysToDateKey(selectedDate, index + 1));
+  }
+
+  async function deleteExtraRemoteEvents(date: string, keepEventId: string) {
+    if (!supabase || !session) {
+      return null;
+    }
+
+    const extraIds = (events[date] ?? [])
+      .filter((event) => event.id !== keepEventId)
+      .map((event) => event.id);
+
+    if (extraIds.length === 0) {
+      return null;
+    }
+
+    const { error } = await supabase
+      .from("agenda_events")
+      .delete()
+      .eq("user_id", session.user.id)
+      .in("id", extraIds);
+
+    return error;
   }
 
   async function signInWithEmail(event: FormEvent<HTMLFormElement>) {
@@ -365,56 +577,179 @@ export default function Home() {
     setSyncMessage("");
   }
 
-  async function addEvent(event: FormEvent<HTMLFormElement>) {
+  async function saveEvent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!title.trim()) {
+    const draft = buildDraft();
+
+    if (!draft) {
       return;
     }
 
-    const nextEvent: CalendarEvent = {
-      id: crypto.randomUUID(),
-      title: title.trim(),
-      time,
-      category,
-      notes: notes.trim(),
-      done: false,
+    const existingEvent = selectedEvent ?? primarySelectedEvent;
+    const localEvent: CalendarEvent = {
+      ...draft,
+      id: existingEvent?.id ?? crypto.randomUUID(),
     };
 
     if (supabase && session) {
       setDataLoading(true);
       setSyncMessage("");
 
+      if (existingEvent) {
+        const { data, error } = await supabase
+          .from("agenda_events")
+          .update(makeEventPayload(selectedDate, localEvent))
+          .eq("id", existingEvent.id)
+          .eq("user_id", session.user.id)
+          .select(rowSelect)
+          .single();
+
+        if (error || !data) {
+          setDataLoading(false);
+          setSyncMessage(`No se pudo actualizar la nota: ${error?.message ?? "intenta otra vez"}`);
+          return;
+        }
+
+        const cleanupError = await deleteExtraRemoteEvents(selectedDate, existingEvent.id);
+
+        if (cleanupError) {
+          setSyncMessage(`La nota se guardo, pero no se limpiaron duplicados: ${cleanupError.message}`);
+        }
+
+        const savedEvent = rowToEvent(data as AgendaEventRow);
+        setEvents((current) => setSingleEventForDate(current, selectedDate, savedEvent));
+        setEditingEventId(savedEvent.id);
+        setDataLoading(false);
+        return;
+      }
+
       const { data, error } = await supabase
         .from("agenda_events")
         .insert({
           user_id: session.user.id,
-          date: selectedDate,
-          title: nextEvent.title,
-          event_time: nextEvent.time,
-          category: nextEvent.category,
-          notes: nextEvent.notes,
-          done: false,
+          ...makeEventPayload(selectedDate, localEvent),
         })
-        .select("id,date,title,event_time,category,notes,done")
+        .select(rowSelect)
         .single();
 
       setDataLoading(false);
 
       if (error || !data) {
-        setSyncMessage(`No se pudo guardar el evento: ${error?.message ?? "intenta otra vez"}`);
+        setSyncMessage(`No se pudo guardar la nota: ${error?.message ?? "intenta otra vez"}`);
         return;
       }
 
-      setEvents((current) => addEventToDate(current, selectedDate, rowToEvent(data as AgendaEventRow)));
-      setTitle("");
-      setNotes("");
+      const savedEvent = rowToEvent(data as AgendaEventRow);
+      setEvents((current) => setSingleEventForDate(current, selectedDate, savedEvent));
+      setEditingEventId(savedEvent.id);
       return;
     }
 
-    setEvents((current) => addEventToDate(current, selectedDate, nextEvent));
-    setTitle("");
-    setNotes("");
+    setEvents((current) => setSingleEventForDate(current, selectedDate, localEvent));
+    setEditingEventId(localEvent.id);
+  }
+
+  async function saveDuplicateToDate(targetDate: string, draft: EventDraft) {
+    const existingTarget = events[targetDate]?.[0] ?? null;
+    const localEvent: CalendarEvent = {
+      ...draft,
+      id: existingTarget?.id ?? crypto.randomUUID(),
+    };
+
+    if (supabase && session) {
+      if (existingTarget) {
+        const { data, error } = await supabase
+          .from("agenda_events")
+          .update(makeEventPayload(targetDate, localEvent))
+          .eq("id", existingTarget.id)
+          .eq("user_id", session.user.id)
+          .select(rowSelect)
+          .single();
+
+        if (error || !data) {
+          throw new Error(error?.message ?? "No se pudo sobrescribir la nota.");
+        }
+
+        const cleanupError = await deleteExtraRemoteEvents(targetDate, existingTarget.id);
+
+        if (cleanupError) {
+          throw new Error(cleanupError.message);
+        }
+
+        return rowToEvent(data as AgendaEventRow);
+      }
+
+      const { data, error } = await supabase
+        .from("agenda_events")
+        .insert({
+          user_id: session.user.id,
+          ...makeEventPayload(targetDate, localEvent),
+        })
+        .select(rowSelect)
+        .single();
+
+      if (error || !data) {
+        throw new Error(error?.message ?? "No se pudo duplicar la nota.");
+      }
+
+      return rowToEvent(data as AgendaEventRow);
+    }
+
+    return localEvent;
+  }
+
+  async function duplicateEvent() {
+    const sourceEvent = selectedEvent ?? primarySelectedEvent;
+
+    if (!sourceEvent) {
+      return;
+    }
+
+    const targets = buildDuplicateTargets();
+
+    if (targets.length === 0) {
+      setDuplicateMessage("Elige una fecha distinta para duplicar.");
+      return;
+    }
+
+    const occupiedTargets = targets.filter((date) => (events[date] ?? []).length > 0);
+
+    if (occupiedTargets.length > 0) {
+      const confirmed = window.confirm(
+        `Ya existe una nota en: ${occupiedTargets.map(formatLongDate).join(", ")}. Deseas sobrescribirla?`,
+      );
+
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    setDataLoading(true);
+    setDuplicateMessage("");
+
+    try {
+      const savedEvents: Array<{ date: string; event: CalendarEvent }> = [];
+
+      for (const targetDate of targets) {
+        const savedEvent = await saveDuplicateToDate(targetDate, makeDraftForDate(sourceEvent, targetDate));
+        savedEvents.push({ date: targetDate, event: savedEvent });
+      }
+
+      setEvents((current) =>
+        savedEvents.reduce(
+          (nextEvents, item) => setSingleEventForDate(nextEvents, item.date, item.event),
+          current,
+        ),
+      );
+      setDuplicateMessage("Nota duplicada correctamente.");
+    } catch (error) {
+      setDuplicateMessage(
+        `No se pudo duplicar: ${error instanceof Error ? error.message : "intenta otra vez"}`,
+      );
+    } finally {
+      setDataLoading(false);
+    }
   }
 
   async function toggleDone(date: string, eventId: string) {
@@ -434,7 +769,7 @@ export default function Home() {
         .eq("user_id", session.user.id);
 
       if (error) {
-        setSyncMessage(`No se pudo actualizar el evento: ${error.message}`);
+        setSyncMessage(`No se pudo actualizar la nota: ${error.message}`);
         return;
       }
     }
@@ -451,7 +786,7 @@ export default function Home() {
         .eq("user_id", session.user.id);
 
       if (error) {
-        setSyncMessage(`No se pudo eliminar el evento: ${error.message}`);
+        setSyncMessage(`No se pudo eliminar la nota: ${error.message}`);
         return;
       }
     }
@@ -523,69 +858,23 @@ export default function Home() {
             <p className="mt-2 text-sm text-[#a7a29a]">
               Dia seleccionado: {formatLongDate(selectedDate)}
             </p>
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <span className="status-pill">
-                {supabase
-                  ? dataLoading
-                    ? "Sincronizando..."
-                    : `Nube: ${session?.user.email ?? "conectado"}`
-                  : "Modo local"}
-              </span>
-              {supabase && session ? (
-                <button className="small-button" type="button" onClick={signOut}>
-                  Salir
-                </button>
-              ) : null}
-            </div>
-            {syncMessage ? <p className="sync-message mt-3">{syncMessage}</p> : null}
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-[1fr_1.25fr_1fr] lg:min-w-[560px]">
-            <div className="stat-card">
-              <p className="stat-value text-[#44d7a8]">{selectedEvents.length}</p>
-              <p className="stat-label">Eventos del dia</p>
-            </div>
-
-            <div className="stat-card">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="stat-value text-[#ffd166]">{weekEvents.length}</p>
-                  <p className="stat-label">Semana</p>
-                </div>
-                <p className="text-right text-xs font-bold text-[#928c83]">{weekRange}</p>
-              </div>
-
-              <div className="mt-3 grid grid-cols-7 gap-1.5">
-                {weekDays.map((date, index) => {
-                  const key = toDateKey(date);
-                  const dayEvents = events[key] ?? [];
-                  const height = Math.min(36, 8 + dayEvents.length * 9);
-
-                  return (
-                    <button
-                      className="week-indicator"
-                      data-active={key === selectedDate}
-                      key={key}
-                      title={`${weekdays[index]}: ${dayEvents.length} eventos`}
-                      type="button"
-                      onClick={() => selectDate(date)}
-                    >
-                      <span className="week-bar" style={{ height }} />
-                      <span>{weekdays[index][0]}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="stat-card">
-              <p className="stat-value text-[#9aa7ff]">{completedWeekEvents}</p>
-              <p className="stat-label">Listos semana</p>
-              <p className="mt-1 text-xs font-semibold text-[#928c83]">
-                {activeWeekDays} dias con eventos
-              </p>
-            </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="status-pill">
+              {supabase
+                ? dataLoading
+                  ? "Sincronizando..."
+                  : `Nube: ${session?.user.email ?? "conectado"}`
+                : "Modo local"}
+            </span>
+            {supabase && session ? (
+              <button className="small-button" type="button" onClick={signOut}>
+                Salir
+              </button>
+            ) : null}
           </div>
+          {syncMessage ? <p className="sync-message lg:max-w-sm">{syncMessage}</p> : null}
         </header>
 
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1.7fr)_minmax(340px,0.9fr)]">
@@ -597,8 +886,8 @@ export default function Home() {
                 </h2>
                 <p className="text-sm text-[#a7a29a]">
                   {viewMode === "month"
-                    ? "Selecciona un dia para ver o crear eventos."
-                    : "Revisa los eventos distribuidos en la semana seleccionada."}
+                    ? "Selecciona un dia para editar su nota."
+                    : "Revisa tus notas de la semana seleccionada."}
                 </p>
               </div>
 
@@ -660,7 +949,7 @@ export default function Home() {
                     const isCurrentMonth = date.getMonth() === monthDate.getMonth();
                     const isSelected = key === selectedDate;
                     const isToday = key === todayKey;
-                    const dayEvents = events[key] ?? [];
+                    const dayEvent = events[key]?.[0] ?? null;
 
                     return (
                       <button
@@ -674,16 +963,12 @@ export default function Home() {
                         onClick={() => selectDate(date)}
                       >
                         <span className={isToday ? "today-pill" : ""}>{date.getDate()}</span>
-                        <span className="mt-auto flex min-h-5 flex-wrap gap-1">
-                          {dayEvents.slice(0, 3).map((calendarEvent) => (
-                            <span className="event-dot" data-category={calendarEvent.category} key={calendarEvent.id} />
-                          ))}
-                          {dayEvents.length > 3 ? (
-                            <span className="text-[10px] font-semibold text-[#a7a29a]">
-                              +{dayEvents.length - 3}
-                            </span>
-                          ) : null}
-                        </span>
+                        {dayEvent ? (
+                          <span className="day-note-mark">
+                            <span className="event-dot" data-category={dayEvent.category} />
+                            {dayEvent.hasReminder ? <span className="reminder-dot" /> : null}
+                          </span>
+                        ) : null}
                       </button>
                     );
                   })}
@@ -706,14 +991,11 @@ export default function Home() {
                         <span className={isToday ? "today-pill" : "week-day-number"}>
                           {date.getDate()}
                         </span>
-                        <span className="text-xs font-semibold text-[#a7a29a]">
-                          {dayEvents.length} eventos
-                        </span>
                       </button>
 
                       <div className="flex flex-col gap-2">
                         {dayEvents.length === 0 ? (
-                          <p className="empty-state compact">Sin eventos</p>
+                          <p className="empty-state compact">Sin nota</p>
                         ) : (
                           dayEvents.map((calendarEvent) => (
                             <article className="event-card compact" data-done={calendarEvent.done} key={calendarEvent.id}>
@@ -728,6 +1010,11 @@ export default function Home() {
                                 <div className="min-w-0 flex-1">
                                   <p className="truncate font-bold text-[#fffaf0]">{calendarEvent.title}</p>
                                   <p className="text-xs font-semibold text-[#a7a29a]">{calendarEvent.time}</p>
+                                  {calendarEvent.hasReminder && calendarEvent.reminderAt ? (
+                                    <p className="mt-1 text-xs font-semibold text-[#ffd166]">
+                                      Aviso {formatReminder(calendarEvent.reminderAt)}
+                                    </p>
+                                  ) : null}
                                   <span className="category-chip mt-2 inline-flex" data-category={calendarEvent.category}>
                                     {calendarEvent.category}
                                   </span>
@@ -747,9 +1034,11 @@ export default function Home() {
           <aside className="flex flex-col gap-6">
             <section className="app-shell p-5">
               <p className="eyebrow">{formatLongDate(selectedDate)}</p>
-              <h2 className="mt-1 text-2xl font-bold text-[#fffaf0]">Nuevo evento</h2>
+              <h2 className="mt-1 text-2xl font-bold text-[#fffaf0]">
+                {selectedEvent ? "Editar nota" : "Nueva nota"}
+              </h2>
 
-              <form className="mt-5 flex flex-col gap-4" onSubmit={addEvent}>
+              <form className="mt-5 flex flex-col gap-4" onSubmit={saveEvent}>
                 <label className="field-label">
                   Titulo
                   <input
@@ -757,6 +1046,7 @@ export default function Home() {
                     value={title}
                     onChange={(event) => setTitle(event.target.value)}
                     placeholder="Reunion, clase, tarea..."
+                    required
                   />
                 </label>
 
@@ -767,7 +1057,13 @@ export default function Home() {
                       className="field-input"
                       type="time"
                       value={time}
-                      onChange={(event) => setTime(event.target.value)}
+                      onChange={(event) => {
+                        setTime(event.target.value);
+
+                        if (hasReminder && !reminderAt) {
+                          setReminderAt(defaultReminderAt(selectedDate, event.target.value));
+                        }
+                      }}
                     />
                   </label>
 
@@ -795,21 +1091,106 @@ export default function Home() {
                   />
                 </label>
 
+                <label className="toggle-row">
+                  <input
+                    checked={hasReminder}
+                    className="h-4 w-4 accent-[#44d7a8]"
+                    type="checkbox"
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setHasReminder(checked);
+
+                      if (checked && !reminderAt) {
+                        setReminderAt(defaultReminderAt(selectedDate, time));
+                      }
+                    }}
+                  />
+                  <span>Activar recordatorio</span>
+                </label>
+
+                {hasReminder ? (
+                  <label className="field-label">
+                    Fecha y hora de aviso
+                    <input
+                      className="field-input"
+                      type="datetime-local"
+                      value={reminderAt}
+                      onChange={(event) => setReminderAt(event.target.value)}
+                      required
+                    />
+                  </label>
+                ) : null}
+
                 <button className="primary-button" disabled={dataLoading} type="submit">
-                  {dataLoading ? "Guardando..." : "Guardar evento"}
+                  {dataLoading ? "Guardando..." : selectedEvent ? "Guardar cambios" : "Guardar nota"}
                 </button>
               </form>
             </section>
 
             <section className="app-shell p-5">
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="text-xl font-bold text-[#fffaf0]">Eventos del dia</h2>
-                <span className="count-pill">{selectedEvents.length}</span>
+              <h2 className="text-xl font-bold text-[#fffaf0]">Duplicar nota</h2>
+
+              <div className="mt-4 flex flex-col gap-4">
+                <div className="view-switch view-switch-wide" aria-label="Modo de duplicacion">
+                  <button
+                    data-active={duplicateMode === "next-days"}
+                    type="button"
+                    onClick={() => setDuplicateMode("next-days")}
+                  >
+                    Dias siguientes
+                  </button>
+                  <button
+                    data-active={duplicateMode === "specific-date"}
+                    type="button"
+                    onClick={() => setDuplicateMode("specific-date")}
+                  >
+                    Fecha exacta
+                  </button>
+                </div>
+
+                {duplicateMode === "next-days" ? (
+                  <label className="field-label">
+                    Dias a copiar
+                    <input
+                      className="field-input"
+                      min="1"
+                      max="30"
+                      type="number"
+                      value={duplicateDays}
+                      onChange={(event) => setDuplicateDays(event.target.value)}
+                    />
+                  </label>
+                ) : (
+                  <label className="field-label">
+                    Fecha destino
+                    <input
+                      className="field-input"
+                      type="date"
+                      value={duplicateDate}
+                      onChange={(event) => setDuplicateDate(event.target.value)}
+                    />
+                  </label>
+                )}
+
+                <button
+                  className="secondary-button"
+                  disabled={!selectedEvent || dataLoading}
+                  type="button"
+                  onClick={duplicateEvent}
+                >
+                  Duplicar
+                </button>
+
+                {duplicateMessage ? <p className="sync-message">{duplicateMessage}</p> : null}
               </div>
+            </section>
+
+            <section className="app-shell p-5">
+              <h2 className="text-xl font-bold text-[#fffaf0]">Notas guardadas</h2>
 
               <div className="mt-4 flex flex-col gap-3">
                 {selectedEvents.length === 0 ? (
-                  <p className="empty-state">No hay eventos para este dia.</p>
+                  <p className="empty-state">No hay nota para este dia.</p>
                 ) : (
                   selectedEvents.map((calendarEvent) => (
                     <article className="event-card" data-done={calendarEvent.done} key={calendarEvent.id}>
@@ -829,18 +1210,32 @@ export default function Home() {
                             </span>
                           </div>
                           <p className="mt-1 text-sm font-semibold text-[#a7a29a]">{calendarEvent.time}</p>
+                          {calendarEvent.hasReminder && calendarEvent.reminderAt ? (
+                            <p className="mt-1 text-sm font-semibold text-[#ffd166]">
+                              Aviso {formatReminder(calendarEvent.reminderAt)}
+                            </p>
+                          ) : null}
                           {calendarEvent.notes ? (
                             <p className="mt-2 text-sm leading-6 text-[#c7c1b6]">{calendarEvent.notes}</p>
                           ) : null}
+
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <button
+                              className="small-button"
+                              type="button"
+                              onClick={() => fillEditor(calendarEvent)}
+                            >
+                              Editar
+                            </button>
+                            <button
+                              className="danger-button"
+                              type="button"
+                              onClick={() => deleteEvent(selectedDate, calendarEvent.id)}
+                            >
+                              Eliminar
+                            </button>
+                          </div>
                         </div>
-                        <button
-                          aria-label="Eliminar evento"
-                          className="delete-button"
-                          type="button"
-                          onClick={() => deleteEvent(selectedDate, calendarEvent.id)}
-                        >
-                          &times;
-                        </button>
                       </div>
                     </article>
                   ))

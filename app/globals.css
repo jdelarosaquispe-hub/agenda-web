@@ -22,10 +22,7 @@ html {
 
 body {
   margin: 0;
-  background:
-    radial-gradient(circle at top left, rgba(68, 215, 168, 0.1), transparent 28rem),
-    radial-gradient(circle at top right, rgba(255, 209, 102, 0.09), transparent 24rem),
-    var(--background);
+  background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
@@ -72,27 +69,6 @@ button:disabled:hover {
   font-weight: 900;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-}
-
-.stat-card {
-  min-height: 98px;
-  border: 1px solid #302d29;
-  border-radius: 8px;
-  background: #1f1e1b;
-  padding: 14px;
-}
-
-.stat-value {
-  font-size: 28px;
-  font-weight: 900;
-  line-height: 1;
-}
-
-.stat-label {
-  margin-top: 6px;
-  color: #c7c1b6;
-  font-size: 12px;
-  font-weight: 800;
 }
 
 .status-pill,
@@ -184,6 +160,10 @@ button:disabled:hover {
   color: #111512;
 }
 
+.view-switch-wide button {
+  min-width: 0;
+}
+
 .field-label {
   display: flex;
   flex-direction: column;
@@ -210,6 +190,19 @@ button:disabled:hover {
 .field-input:focus {
   border-color: #44d7a8;
   box-shadow: 0 0 0 3px rgba(68, 215, 168, 0.14);
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #34312b;
+  border-radius: 8px;
+  background: #151411;
+  color: #d8d2c7;
+  font-size: 14px;
+  font-weight: 900;
+  padding: 12px;
 }
 
 .calendar-day {
@@ -259,11 +252,27 @@ button:disabled:hover {
   font-weight: 900;
 }
 
+.day-note-mark {
+  display: flex;
+  margin-top: auto;
+  min-height: 22px;
+  align-items: center;
+  gap: 7px;
+}
+
 .event-dot {
   width: 9px;
   height: 9px;
   border-radius: 999px;
   background: #928c83;
+}
+
+.reminder-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #ffd166;
+  box-shadow: 0 0 0 3px rgba(255, 209, 102, 0.12);
 }
 
 .event-dot[data-category="Trabajo"],
@@ -295,33 +304,6 @@ button:disabled:hover {
   padding: 3px 8px;
   font-size: 11px;
   font-weight: 900;
-}
-
-.week-indicator {
-  display: flex;
-  min-width: 0;
-  height: 56px;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 4px;
-  border-radius: 8px;
-  color: #928c83;
-  font-size: 10px;
-  font-weight: 900;
-}
-
-.week-indicator:hover,
-.week-indicator[data-active="true"] {
-  background: #29261f;
-  color: #fffaf0;
-}
-
-.week-bar {
-  width: 9px;
-  min-height: 5px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, #ffd166, #44d7a8);
 }
 
 .week-grid {
@@ -386,15 +368,6 @@ button:disabled:hover {
   text-decoration: line-through;
 }
 
-.count-pill {
-  border-radius: 8px;
-  background: #29261f;
-  color: #ffd166;
-  font-size: 14px;
-  font-weight: 900;
-  padding: 5px 10px;
-}
-
 .empty-state {
   border: 1px dashed #4a453c;
   border-radius: 8px;
@@ -408,21 +381,19 @@ button:disabled:hover {
   padding: 12px;
 }
 
-.delete-button {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  flex: 0 0 auto;
+.danger-button {
+  display: inline-grid;
   place-items: center;
   border: 1px solid #713737;
   border-radius: 8px;
   background: #321a1a;
   color: #ff9b9b;
-  font-size: 22px;
-  line-height: 1;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 7px 10px;
 }
 
-.delete-button:hover {
+.danger-button:hover {
   background: #4c2020;
 }
 
