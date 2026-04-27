@@ -33,7 +33,7 @@ type AgendaEventRow = {
 type EventsByDate = Record<string, CalendarEvent[]>;
 type CalendarView = "month" | "week";
 type DuplicateMode = "next-days" | "specific-date";
-type EditorMode = "create" | "edit";
+type EditorMode = "hidden" | "create" | "edit";
 
 const STORAGE_KEY = "agenda-web-events";
 const CALENDAR_NAME_KEY = "agenda-web-calendar-name";
@@ -333,7 +333,7 @@ export default function Home() {
   const [calendarNameDraft, setCalendarNameDraft] = useState(DEFAULT_CALENDAR_NAME);
   const [isEditingCalendarName, setIsEditingCalendarName] = useState(false);
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
-  const [editorMode, setEditorMode] = useState<EditorMode>("create");
+  const [editorMode, setEditorMode] = useState<EditorMode>("hidden");
   const [title, setTitle] = useState("");
   const [time, setTime] = useState("09:00");
   const [category, setCategory] = useState<CalendarEvent["category"]>("Trabajo");
@@ -356,7 +356,6 @@ export default function Home() {
   const weekDays = useMemo(() => createWeekDays(selectedDateObject), [selectedDateObject]);
   const selectedEvents = events[selectedDate] ?? [];
   const selectedEvent = selectedEvents.find((event) => event.id === editingEventId) ?? null;
-  const primarySelectedEvent = selectedEvents[0] ?? null;
   const weekRange = `${formatShortDate(weekDays[0])} - ${formatShortDate(weekDays[6])}`;
   const userId = session?.user.id;
 
@@ -467,45 +466,31 @@ export default function Home() {
   useEffect(() => {
     let ignore = false;
 
-    async function syncEditor() {
+    async function resetDayEditor() {
       await Promise.resolve();
 
       if (ignore) {
         return;
       }
 
-      if (primarySelectedEvent) {
-        setEditingEventId(primarySelectedEvent.id);
-        setEditorMode("edit");
-        setTitle(primarySelectedEvent.title);
-        setTime(primarySelectedEvent.time);
-        setCategory(primarySelectedEvent.category);
-        setNotes(primarySelectedEvent.notes);
-        setHasReminder(primarySelectedEvent.hasReminder);
-        setReminderAt(
-          primarySelectedEvent.reminderAt || defaultReminderAt(selectedDate, primarySelectedEvent.time),
-        );
-      } else {
-        setEditingEventId(null);
-        setEditorMode("create");
-        setTitle("");
-        setTime("09:00");
-        setCategory("Trabajo");
-        setNotes("");
-        setHasReminder(false);
-        setReminderAt(defaultReminderAt(selectedDate));
-      }
-
+      setEditingEventId(null);
+      setEditorMode("hidden");
+      setTitle("");
+      setTime("09:00");
+      setCategory("Trabajo");
+      setNotes("");
+      setHasReminder(false);
+      setReminderAt(defaultReminderAt(selectedDate));
       setDuplicateDate(addDaysToDateKey(selectedDate, 1));
       setDuplicateMessage("");
     }
 
-    void syncEditor();
+    void resetDayEditor();
 
     return () => {
       ignore = true;
     };
-  }, [primarySelectedEvent, selectedDate]);
+  }, [selectedDate]);
 
   function selectDate(date: Date) {
     setSelectedDate(toDateKey(date));
@@ -541,14 +526,19 @@ export default function Home() {
     setIsEditingCalendarName(false);
   }
 
-  function startNewNote() {
-    setEditorMode("create");
+  function resetNoteForm() {
     setTitle("");
     setTime("09:00");
     setCategory("Trabajo");
     setNotes("");
     setHasReminder(false);
     setReminderAt(defaultReminderAt(selectedDate));
+  }
+
+  function startNewNote() {
+    setEditingEventId(null);
+    setEditorMode("create");
+    resetNoteForm();
   }
 
   function fillEditor(calendarEvent: CalendarEvent) {
@@ -569,7 +559,23 @@ export default function Home() {
   }
 
   function selectSavedNote(calendarEvent: CalendarEvent) {
+    if (editingEventId === calendarEvent.id) {
+      setEditingEventId(null);
+
+      if (editorMode === "edit") {
+        setEditorMode("hidden");
+        resetNoteForm();
+      }
+
+      return;
+    }
+
     setEditingEventId(calendarEvent.id);
+
+    if (editorMode === "edit") {
+      setEditorMode("hidden");
+      resetNoteForm();
+    }
   }
 
   function buildDraft(done: boolean): EventDraft | null {
@@ -778,9 +784,10 @@ export default function Home() {
   }
 
   async function duplicateEvent() {
-    const sourceEvent = selectedEvent ?? primarySelectedEvent;
+    const sourceEvent = selectedEvent;
 
     if (!sourceEvent) {
+      setDuplicateMessage("Selecciona una nota para duplicar.");
       return;
     }
 
@@ -872,14 +879,9 @@ export default function Home() {
     setEvents((current) => removeEventFromDate(current, date, eventId));
 
     if (date === selectedDate && editingEventId === eventId) {
-      const nextSelectedEvent = (events[date] ?? []).find((calendarEvent) => calendarEvent.id !== eventId);
-
-      if (nextSelectedEvent) {
-        fillEditor(nextSelectedEvent);
-      } else {
-        setEditingEventId(null);
-        startNewNote();
-      }
+      setEditingEventId(null);
+      setEditorMode("hidden");
+      resetNoteForm();
     }
   }
 
@@ -1165,7 +1167,7 @@ export default function Home() {
           <aside className="flex flex-col gap-6">
             <section className="app-shell p-5">
               <p className="eyebrow">{formatLongDate(selectedDate)}</p>
-              <h2 className="mt-1 text-2xl font-bold text-[#fffaf0]">Editar notas</h2>
+              <h2 className="mt-1 text-2xl font-bold text-[#fffaf0]">Notas del dia</h2>
 
               <div className="mt-4 flex flex-col gap-3">
                 {selectedEvents.length === 0 ? (
@@ -1187,7 +1189,7 @@ export default function Home() {
                             checked={isSelectedNote}
                             className="mt-1 h-4 w-4 accent-[#44d7a8]"
                             name="selected-note"
-                            type="radio"
+                            type="checkbox"
                             onChange={() => selectSavedNote(calendarEvent)}
                           />
                           <input
@@ -1232,22 +1234,24 @@ export default function Home() {
                 <button className="secondary-button" type="button" onClick={startNewNote}>
                   Nueva nota
                 </button>
-                <button
-                  className="secondary-button"
-                  disabled={!selectedEvent}
-                  type="button"
-                  onClick={editSelectedNote}
-                >
-                  Modificar seleccionada
-                </button>
+                {selectedEvent ? (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={editSelectedNote}
+                  >
+                    Modificar seleccionada
+                  </button>
+                ) : null}
               </div>
 
-              <div className="editor-panel mt-5">
-                <h3 className="text-lg font-bold text-[#fffaf0]">
-                  {editorMode === "edit" && selectedEvent ? "Modificar nota seleccionada" : "Nueva nota"}
-                </h3>
+              {editorMode !== "hidden" ? (
+                <div className="editor-panel mt-5">
+                  <h3 className="text-lg font-bold text-[#fffaf0]">
+                    {editorMode === "edit" && selectedEvent ? "Modificar nota seleccionada" : "Nueva nota"}
+                  </h3>
 
-              <form className="mt-4 flex flex-col gap-4" onSubmit={saveEvent}>
+                  <form className="mt-4 flex flex-col gap-4" onSubmit={saveEvent}>
                 <label className="field-label">
                   Titulo
                   <input
@@ -1337,8 +1341,9 @@ export default function Home() {
                       ? "Guardar cambios"
                       : "Guardar nota"}
                 </button>
-              </form>
-              </div>
+                  </form>
+                </div>
+              ) : null}
             </section>
 
             <section className="app-shell p-5">
