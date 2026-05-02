@@ -32,7 +32,7 @@ type AgendaEventRow = {
 
 type EventsByDate = Record<string, CalendarEvent[]>;
 type CalendarView = "month" | "week";
-type DuplicateMode = "next-days" | "specific-date";
+type DuplicateMode = "daily" | "custom-days";
 type EditorMode = "hidden" | "create" | "edit";
 
 const STORAGE_KEY = "agenda-web-events";
@@ -44,6 +44,7 @@ const supabaseKey =
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 const weekdays = ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"];
+const recurrenceWeekdays = weekdays.map((label, value) => ({ label, value }));
 const categories: CalendarEvent["category"][] = [
   "Trabajo",
   "Personal",
@@ -70,6 +71,25 @@ function addDaysToDateKey(key: string, amount: number) {
   const date = fromDateKey(key);
   date.setDate(date.getDate() + amount);
   return toDateKey(date);
+}
+
+function getWeekdayIndex(date: Date) {
+  return (date.getDay() + 6) % 7;
+}
+
+function createDateKeysUntil(startKey: string, endKey: string, maxDays = 365) {
+  const currentDate = fromDateKey(startKey);
+  const endDate = fromDateKey(endKey);
+  const dates: string[] = [];
+
+  currentDate.setDate(currentDate.getDate() + 1);
+
+  while (currentDate <= endDate && dates.length < maxDays) {
+    dates.push(toDateKey(currentDate));
+    currentDate.setDate(currentDate.getDate() + 1);
+  }
+
+  return dates;
 }
 
 function formatMonth(date: Date) {
@@ -340,9 +360,11 @@ export default function Home() {
   const [notes, setNotes] = useState("");
   const [hasReminder, setHasReminder] = useState(false);
   const [reminderAt, setReminderAt] = useState(defaultReminderAt(todayKey));
-  const [duplicateMode, setDuplicateMode] = useState<DuplicateMode>("next-days");
-  const [duplicateDays, setDuplicateDays] = useState("1");
-  const [duplicateDate, setDuplicateDate] = useState(addDaysToDateKey(todayKey, 1));
+  const [duplicateMode, setDuplicateMode] = useState<DuplicateMode>("daily");
+  const [duplicateUntilDate, setDuplicateUntilDate] = useState(addDaysToDateKey(todayKey, 7));
+  const [duplicateWeekdays, setDuplicateWeekdays] = useState<number[]>(() => [
+    getWeekdayIndex(fromDateKey(todayKey)),
+  ]);
   const [duplicateMessage, setDuplicateMessage] = useState("");
   const [authEmail, setAuthEmail] = useState("");
   const [authMessage, setAuthMessage] = useState("");
@@ -481,7 +503,8 @@ export default function Home() {
       setNotes("");
       setHasReminder(false);
       setReminderAt(defaultReminderAt(selectedDate));
-      setDuplicateDate(addDaysToDateKey(selectedDate, 1));
+      setDuplicateUntilDate(addDaysToDateKey(selectedDate, 7));
+      setDuplicateWeekdays([getWeekdayIndex(fromDateKey(selectedDate))]);
       setDuplicateMessage("");
     }
 
@@ -542,6 +565,7 @@ export default function Home() {
   }
 
   function cancelEditor() {
+    setEditingEventId(null);
     setEditorMode("hidden");
     resetNoteForm();
   }
@@ -557,30 +581,21 @@ export default function Home() {
     setReminderAt(calendarEvent.reminderAt || defaultReminderAt(selectedDate, calendarEvent.time));
   }
 
-  function editSelectedNote() {
-    if (selectedEvent) {
-      fillEditor(selectedEvent);
-    }
-  }
-
   function selectSavedNote(calendarEvent: CalendarEvent) {
     if (editingEventId === calendarEvent.id) {
-      setEditingEventId(null);
-
-      if (editorMode === "edit") {
-        setEditorMode("hidden");
-        resetNoteForm();
-      }
-
+      cancelEditor();
       return;
     }
 
-    setEditingEventId(calendarEvent.id);
+    fillEditor(calendarEvent);
+  }
 
-    if (editorMode === "edit") {
-      setEditorMode("hidden");
-      resetNoteForm();
-    }
+  function toggleDuplicateWeekday(weekday: number) {
+    setDuplicateWeekdays((current) =>
+      current.includes(weekday)
+        ? current.filter((item) => item !== weekday)
+        : [...current, weekday].sort((a, b) => a - b),
+    );
   }
 
   function buildDraft(done: boolean): EventDraft | null {
@@ -600,12 +615,14 @@ export default function Home() {
   }
 
   function buildDuplicateTargets() {
-    if (duplicateMode === "specific-date") {
-      return duplicateDate && duplicateDate !== selectedDate ? [duplicateDate] : [];
+    const dates = createDateKeysUntil(selectedDate, duplicateUntilDate);
+
+    if (duplicateMode === "daily") {
+      return dates;
     }
 
-    const days = Math.min(30, Math.max(1, Number.parseInt(duplicateDays, 10) || 1));
-    return Array.from({ length: days }, (_, index) => addDaysToDateKey(selectedDate, index + 1));
+    const selectedWeekdays = new Set(duplicateWeekdays);
+    return dates.filter((date) => selectedWeekdays.has(getWeekdayIndex(fromDateKey(date))));
   }
 
   async function deleteExtraRemoteEvents(date: string, keepEventId: string) {
@@ -796,10 +813,20 @@ export default function Home() {
       return;
     }
 
+    if (!duplicateUntilDate || duplicateUntilDate <= selectedDate) {
+      setDuplicateMessage("Elige una fecha final posterior al dia seleccionado.");
+      return;
+    }
+
+    if (duplicateMode === "custom-days" && duplicateWeekdays.length === 0) {
+      setDuplicateMessage("Elige al menos un dia de la semana.");
+      return;
+    }
+
     const targets = buildDuplicateTargets();
 
     if (targets.length === 0) {
-      setDuplicateMessage("Elige una fecha distinta para duplicar.");
+      setDuplicateMessage("No hay fechas disponibles con esa recurrencia.");
       return;
     }
 
@@ -832,7 +859,11 @@ export default function Home() {
           current,
         ),
       );
-      setDuplicateMessage("Nota duplicada correctamente.");
+      setDuplicateMessage(
+        targets.length === 1
+          ? "Nota duplicada correctamente."
+          : `Nota duplicada en ${targets.length} fechas.`,
+      );
     } catch (error) {
       setDuplicateMessage(
         `No se pudo duplicar: ${error instanceof Error ? error.message : "intenta otra vez"}`,
@@ -888,6 +919,108 @@ export default function Home() {
       setEditorMode("hidden");
       resetNoteForm();
     }
+  }
+
+  function renderNoteForm() {
+    return (
+      <form className="mt-4 flex flex-col gap-4" onSubmit={saveEvent}>
+        <label className="field-label">
+          Titulo
+          <input
+            autoFocus
+            className="field-input"
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="Reunion, clase, tarea..."
+            required
+          />
+        </label>
+
+        <div className="grid grid-cols-2 gap-3">
+          <label className="field-label">
+            Hora
+            <input
+              className="field-input"
+              type="time"
+              value={time}
+              onChange={(event) => {
+                setTime(event.target.value);
+
+                if (hasReminder && !reminderAt) {
+                  setReminderAt(defaultReminderAt(selectedDate, event.target.value));
+                }
+              }}
+            />
+          </label>
+
+          <label className="field-label">
+            Categoria
+            <select
+              className="field-input"
+              value={category}
+              onChange={(event) => setCategory(event.target.value as CalendarEvent["category"])}
+            >
+              {categories.map((item) => (
+                <option key={item}>{item}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <label className="field-label">
+          Notas
+          <textarea
+            className="field-input min-h-28 resize-y"
+            value={notes}
+            onChange={(event) => setNotes(event.target.value)}
+            placeholder="Detalles, lugar, pendientes..."
+          />
+        </label>
+
+        <label className="toggle-row">
+          <input
+            checked={hasReminder}
+            className="h-4 w-4 accent-[#44d7a8]"
+            type="checkbox"
+            onChange={(event) => {
+              const checked = event.target.checked;
+              setHasReminder(checked);
+
+              if (checked && !reminderAt) {
+                setReminderAt(defaultReminderAt(selectedDate, time));
+              }
+            }}
+          />
+          <span>Activar recordatorio</span>
+        </label>
+
+        {hasReminder ? (
+          <label className="field-label">
+            Fecha y hora de aviso
+            <input
+              className="field-input"
+              type="datetime-local"
+              value={reminderAt}
+              onChange={(event) => setReminderAt(event.target.value)}
+              required
+            />
+          </label>
+        ) : null}
+
+        <div className="note-action-row">
+          <button className="primary-button" disabled={dataLoading} type="submit">
+            {dataLoading
+              ? "Guardando..."
+              : editorMode === "edit" && selectedEvent
+                ? "Guardar cambios"
+                : "Guardar nota"}
+          </button>
+          <button className="secondary-button" type="button" onClick={cancelEditor}>
+            Cancelar
+          </button>
+        </div>
+      </form>
+    );
   }
 
   if (supabase && isMounted && !session) {
@@ -1137,25 +1270,26 @@ export default function Home() {
                         ) : (
                           dayEvents.map((calendarEvent) => (
                             <article className="event-card compact" data-done={calendarEvent.done} key={calendarEvent.id}>
-                              <div className="flex items-start gap-2">
-                                <input
-                                  aria-label="Marcar como completado"
-                                  checked={calendarEvent.done}
-                                  className="mt-1 h-4 w-4 accent-[#44d7a8]"
-                                  type="checkbox"
-                                  onChange={() => toggleDone(key, calendarEvent.id)}
-                                />
-                                <div className="min-w-0 flex-1">
-                                  <p className="truncate font-bold text-[#fffaf0]">{calendarEvent.title}</p>
-                                  <p className="text-xs font-semibold text-[#a7a29a]">{calendarEvent.time}</p>
-                                  {calendarEvent.hasReminder && calendarEvent.reminderAt ? (
-                                    <p className="mt-1 text-xs font-semibold text-[#ffd166]">
-                                      Aviso {formatReminder(calendarEvent.reminderAt)}
-                                    </p>
-                                  ) : null}
-                                  <span className="category-chip mt-2 inline-flex" data-category={calendarEvent.category}>
+                              <div className="min-w-0">
+                                <p className="truncate font-bold text-[#fffaf0]">{calendarEvent.title}</p>
+                                <p className="text-xs font-semibold text-[#a7a29a]">{calendarEvent.time}</p>
+                                {calendarEvent.hasReminder && calendarEvent.reminderAt ? (
+                                  <p className="mt-1 text-xs font-semibold text-[#ffd166]">
+                                    Aviso {formatReminder(calendarEvent.reminderAt)}
+                                  </p>
+                                ) : null}
+                                <div className="week-note-footer">
+                                  <span className="category-chip" data-category={calendarEvent.category}>
                                     {calendarEvent.category}
                                   </span>
+                                  <button
+                                    className="success-button compact-action"
+                                    data-active={calendarEvent.done}
+                                    type="button"
+                                    onClick={() => toggleDone(key, calendarEvent.id)}
+                                  >
+                                    Realizado
+                                  </button>
                                 </div>
                               </div>
                             </article>
@@ -1180,6 +1314,7 @@ export default function Home() {
                 ) : (
                   selectedEvents.map((calendarEvent) => {
                     const isSelectedNote = calendarEvent.id === editingEventId;
+                    const isEditingNote = editorMode === "edit" && isSelectedNote;
 
                     return (
                       <article
@@ -1188,170 +1323,108 @@ export default function Home() {
                         data-selected={isSelectedNote}
                         key={calendarEvent.id}
                       >
-                        <div className="flex items-start gap-3">
-                          <input
-                            aria-label={`Seleccionar ${calendarEvent.title}`}
-                            checked={isSelectedNote}
-                            className="mt-1 h-4 w-4 accent-[#44d7a8]"
-                            name="selected-note"
-                            type="checkbox"
-                            onChange={() => selectSavedNote(calendarEvent)}
-                          />
-                          <input
-                            aria-label="Marcar como completado"
-                            checked={calendarEvent.done}
-                            className="mt-1 h-4 w-4 accent-[#44d7a8]"
-                            type="checkbox"
-                            onChange={() => toggleDone(selectedDate, calendarEvent.id)}
-                          />
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <p className="font-bold text-[#fffaf0]">{calendarEvent.title}</p>
-                              <span className="category-chip" data-category={calendarEvent.category}>
-                                {calendarEvent.category}
-                              </span>
+                        {isEditingNote ? (
+                          <>
+                            <div className="saved-note-edit-header">
+                              <label className="note-selection-check">
+                                <input
+                                  aria-label={`Dejar de modificar ${calendarEvent.title}`}
+                                  checked
+                                  className="h-4 w-4 accent-[#44d7a8]"
+                                  name="selected-note"
+                                  type="checkbox"
+                                  onChange={() => selectSavedNote(calendarEvent)}
+                                />
+                                <span>Modificando</span>
+                              </label>
+
+                              <div className="saved-note-actions horizontal">
+                                <button
+                                  className="success-button"
+                                  data-active={calendarEvent.done}
+                                  type="button"
+                                  onClick={() => toggleDone(selectedDate, calendarEvent.id)}
+                                >
+                                  Realizado
+                                </button>
+                                <button
+                                  className="danger-button"
+                                  type="button"
+                                  onClick={() => deleteEvent(selectedDate, calendarEvent.id)}
+                                >
+                                  Eliminar
+                                </button>
+                              </div>
                             </div>
-                            <p className="mt-1 text-sm font-semibold text-[#a7a29a]">{calendarEvent.time}</p>
-                            {calendarEvent.hasReminder && calendarEvent.reminderAt ? (
-                              <p className="mt-1 text-sm font-semibold text-[#ffd166]">
-                                Aviso {formatReminder(calendarEvent.reminderAt)}
-                              </p>
-                            ) : null}
-                            {calendarEvent.notes ? (
-                              <p className="mt-2 text-sm leading-6 text-[#c7c1b6]">{calendarEvent.notes}</p>
-                            ) : null}
+
+                            {renderNoteForm()}
+                          </>
+                        ) : (
+                          <div className="saved-note-row">
+                            <input
+                              aria-label={`Seleccionar ${calendarEvent.title} para modificar`}
+                              checked={false}
+                              className="mt-1 h-4 w-4 accent-[#44d7a8]"
+                              name="selected-note"
+                              type="checkbox"
+                              onChange={() => selectSavedNote(calendarEvent)}
+                            />
+                            <button
+                              className="saved-note-open"
+                              type="button"
+                              onClick={() => fillEditor(calendarEvent)}
+                            >
+                              <span className="saved-note-title-row">
+                                <span className="saved-note-title">{calendarEvent.title}</span>
+                                <span className="category-chip" data-category={calendarEvent.category}>
+                                  {calendarEvent.category}
+                                </span>
+                              </span>
+                              <span className="saved-note-time">{calendarEvent.time}</span>
+                              {calendarEvent.hasReminder && calendarEvent.reminderAt ? (
+                                <span className="saved-note-reminder">
+                                  Aviso {formatReminder(calendarEvent.reminderAt)}
+                                </span>
+                              ) : null}
+                              {calendarEvent.notes ? (
+                                <span className="saved-note-text">{calendarEvent.notes}</span>
+                              ) : null}
+                            </button>
+                            <div className="saved-note-actions">
+                              <button
+                                className="success-button"
+                                data-active={calendarEvent.done}
+                                type="button"
+                                onClick={() => toggleDone(selectedDate, calendarEvent.id)}
+                              >
+                                Realizado
+                              </button>
+                              <button
+                                className="danger-button"
+                                type="button"
+                                onClick={() => deleteEvent(selectedDate, calendarEvent.id)}
+                              >
+                                Eliminar
+                              </button>
+                            </div>
                           </div>
-                          <button
-                            className="danger-button"
-                            type="button"
-                            onClick={() => deleteEvent(selectedDate, calendarEvent.id)}
-                          >
-                            Eliminar
-                          </button>
-                        </div>
+                        )}
                       </article>
                     );
                   })
                 )}
               </div>
 
-              <div className="note-action-row mt-4">
-                <button className="secondary-button" type="button" onClick={startNewNote}>
+              <div className="mt-4">
+                <button className="secondary-button w-full" type="button" onClick={startNewNote}>
                   Nueva nota
                 </button>
-                {selectedEvent ? (
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    onClick={editSelectedNote}
-                  >
-                    Modificar seleccionada
-                  </button>
-                ) : null}
               </div>
 
-              {editorMode !== "hidden" ? (
+              {editorMode === "create" ? (
                 <div className="editor-panel mt-5">
-                  <h3 className="text-lg font-bold text-[#fffaf0]">
-                    {editorMode === "edit" && selectedEvent ? "Modificar nota seleccionada" : "Nueva nota"}
-                  </h3>
-
-                  <form className="mt-4 flex flex-col gap-4" onSubmit={saveEvent}>
-                <label className="field-label">
-                  Titulo
-                  <input
-                    className="field-input"
-                    value={title}
-                    onChange={(event) => setTitle(event.target.value)}
-                    placeholder="Reunion, clase, tarea..."
-                    required
-                  />
-                </label>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <label className="field-label">
-                    Hora
-                    <input
-                      className="field-input"
-                      type="time"
-                      value={time}
-                      onChange={(event) => {
-                        setTime(event.target.value);
-
-                        if (hasReminder && !reminderAt) {
-                          setReminderAt(defaultReminderAt(selectedDate, event.target.value));
-                        }
-                      }}
-                    />
-                  </label>
-
-                  <label className="field-label">
-                    Categoria
-                    <select
-                      className="field-input"
-                      value={category}
-                      onChange={(event) => setCategory(event.target.value as CalendarEvent["category"])}
-                    >
-                      {categories.map((item) => (
-                        <option key={item}>{item}</option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-
-                <label className="field-label">
-                  Notas
-                  <textarea
-                    className="field-input min-h-28 resize-y"
-                    value={notes}
-                    onChange={(event) => setNotes(event.target.value)}
-                    placeholder="Detalles, lugar, pendientes..."
-                  />
-                </label>
-
-                <label className="toggle-row">
-                  <input
-                    checked={hasReminder}
-                    className="h-4 w-4 accent-[#44d7a8]"
-                    type="checkbox"
-                    onChange={(event) => {
-                      const checked = event.target.checked;
-                      setHasReminder(checked);
-
-                      if (checked && !reminderAt) {
-                        setReminderAt(defaultReminderAt(selectedDate, time));
-                      }
-                    }}
-                  />
-                  <span>Activar recordatorio</span>
-                </label>
-
-                {hasReminder ? (
-                  <label className="field-label">
-                    Fecha y hora de aviso
-                    <input
-                      className="field-input"
-                      type="datetime-local"
-                      value={reminderAt}
-                      onChange={(event) => setReminderAt(event.target.value)}
-                      required
-                    />
-                  </label>
-                ) : null}
-
-                    <div className="note-action-row">
-                      <button className="primary-button" disabled={dataLoading} type="submit">
-                        {dataLoading
-                          ? "Guardando..."
-                          : editorMode === "edit" && selectedEvent
-                            ? "Guardar cambios"
-                            : "Guardar nota"}
-                      </button>
-                      <button className="secondary-button" type="button" onClick={cancelEditor}>
-                        Cancelar
-                      </button>
-                    </div>
-                  </form>
+                  <h3 className="text-lg font-bold text-[#fffaf0]">Nueva nota</h3>
+                  {renderNoteForm()}
                 </div>
               ) : null}
             </section>
@@ -1362,48 +1435,59 @@ export default function Home() {
               <div className="mt-4 flex flex-col gap-4">
                 <div className="view-switch view-switch-wide" aria-label="Modo de duplicacion">
                   <button
-                    data-active={duplicateMode === "next-days"}
+                    data-active={duplicateMode === "daily"}
                     type="button"
-                    onClick={() => setDuplicateMode("next-days")}
+                    onClick={() => setDuplicateMode("daily")}
                   >
-                    Dias siguientes
+                    Diariamente
                   </button>
                   <button
-                    data-active={duplicateMode === "specific-date"}
+                    data-active={duplicateMode === "custom-days"}
                     type="button"
-                    onClick={() => setDuplicateMode("specific-date")}
+                    onClick={() => setDuplicateMode("custom-days")}
                   >
-                    Fecha exacta
+                    Dias especificos
                   </button>
                 </div>
 
-                {duplicateMode === "next-days" ? (
-                  <label className="field-label">
-                    Dias a copiar
-                    <input
-                      className="field-input"
-                      min="1"
-                      max="30"
-                      type="number"
-                      value={duplicateDays}
-                      onChange={(event) => setDuplicateDays(event.target.value)}
-                    />
-                  </label>
-                ) : (
-                  <label className="field-label">
-                    Fecha destino
-                    <input
-                      className="field-input"
-                      type="date"
-                      value={duplicateDate}
-                      onChange={(event) => setDuplicateDate(event.target.value)}
-                    />
-                  </label>
-                )}
+                {duplicateMode === "custom-days" ? (
+                  <div className="field-label">
+                    Dias
+                    <div className="weekday-grid">
+                      {recurrenceWeekdays.map((weekday) => (
+                        <button
+                          className="weekday-toggle"
+                          data-active={duplicateWeekdays.includes(weekday.value)}
+                          key={weekday.value}
+                          type="button"
+                          onClick={() => toggleDuplicateWeekday(weekday.value)}
+                        >
+                          {weekday.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                <label className="field-label">
+                  Hasta la fecha
+                  <input
+                    className="field-input"
+                    min={addDaysToDateKey(selectedDate, 1)}
+                    type="date"
+                    value={duplicateUntilDate}
+                    onChange={(event) => setDuplicateUntilDate(event.target.value)}
+                  />
+                </label>
 
                 <button
                   className="secondary-button"
-                  disabled={!selectedEvent || dataLoading}
+                  disabled={
+                    !selectedEvent ||
+                    dataLoading ||
+                    !duplicateUntilDate ||
+                    (duplicateMode === "custom-days" && duplicateWeekdays.length === 0)
+                  }
                   type="button"
                   onClick={duplicateEvent}
                 >
