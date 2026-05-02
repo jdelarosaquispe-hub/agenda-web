@@ -532,6 +532,7 @@ export default function Home() {
   const [time, setTime] = useState("09:00");
   const [categoryId, setCategoryId] = useState<string | null>(DEFAULT_CATEGORIES[0].id);
   const [isCategoryMenuOpen, setIsCategoryMenuOpen] = useState(false);
+  const [isCategoryManagerOpen, setIsCategoryManagerOpen] = useState(false);
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
   const [categoryNameDraft, setCategoryNameDraft] = useState("");
   const [categoryColorDraft, setCategoryColorDraft] = useState(NEW_CATEGORY_COLOR);
@@ -758,6 +759,7 @@ export default function Home() {
       setTime("09:00");
       setCategoryId(getDefaultCategoryId(categoriesRef.current));
       setIsCategoryMenuOpen(false);
+      setIsCategoryManagerOpen(false);
       setEditingCategoryId(null);
       setCategoryMessage("");
       setNotes("");
@@ -1187,19 +1189,8 @@ export default function Home() {
 
   function selectCategory(nextCategoryId: string | null) {
     setCategoryId(nextCategoryId);
-
-    if (!nextCategoryId) {
-      setEditingCategoryId(null);
-      setCategoryMessage("");
-      setIsCategoryMenuOpen(false);
-      return;
-    }
-
-    const nextCategory = categories.find((item) => item.id === nextCategoryId);
-
-    if (nextCategory) {
-      startCategoryEdit(nextCategory);
-    }
+    setCategoryMessage("");
+    setIsCategoryMenuOpen(false);
   }
 
   async function createCategory() {
@@ -1353,45 +1344,45 @@ export default function Home() {
     setEditingCategoryId(null);
   }
 
-  function renderCategoryPicker() {
+  function renderCategoryManager() {
     return (
-      <div className="field-label category-field">
-        <span>Categoria</span>
-        <div className="category-picker">
-          <button
-            className="category-picker-button"
-            type="button"
-            onClick={() => setIsCategoryMenuOpen((current) => !current)}
-          >
-            <span className="category-color-bar" style={categoryStyle(selectedCategory)} />
-            <span className="category-picker-name">{selectedCategory.name}</span>
-            <span className="category-picker-caret" aria-hidden="true">
-              {isCategoryMenuOpen ? "^" : "v"}
-            </span>
-          </button>
+      <div className="category-manager">
+        <button
+          className="small-button category-manager-trigger"
+          type="button"
+          onClick={() => {
+            setIsCategoryManagerOpen((current) => !current);
+            setIsCategoryMenuOpen(false);
+          }}
+        >
+          Categorias
+        </button>
 
-          {isCategoryMenuOpen ? (
-            <div className="category-menu">
+        {isCategoryManagerOpen ? (
+          <div className="category-manager-menu">
+            <div className="category-manager-header">
+              <span>Categorias</span>
               <button
-                className="category-option"
-                data-active={categoryId === null}
+                className="category-new-button"
+                disabled={dataLoading}
                 type="button"
-                onClick={() => selectCategory(null)}
+                onClick={createCategory}
               >
-                <span className="category-color-bar" style={categoryStyle(UNCATEGORIZED_CATEGORY)} />
-                <span>{UNCATEGORIZED_CATEGORY.name}</span>
+                Nueva
               </button>
+            </div>
 
+            <div className="category-manager-list">
               {categories.map((item) => {
                 const isEditingCategory = editingCategoryId === item.id;
 
                 return (
                   <div className="category-option-shell" key={item.id}>
                     <button
-                      className="category-option"
-                      data-active={categoryId === item.id}
+                      className="category-option category-manage-option"
+                      data-active={isEditingCategory}
                       type="button"
-                      onClick={() => selectCategory(item.id)}
+                      onClick={() => startCategoryEdit(item)}
                     >
                       <span className="category-color-bar" style={categoryStyle(item)} />
                       <span>{item.name}</span>
@@ -1439,19 +1430,70 @@ export default function Home() {
                   </div>
                 );
               })}
+            </div>
 
+            <div
+              className="category-option category-neutral-preview"
+              aria-label="Categoria neutral"
+            >
+              <span className="category-color-bar" style={categoryStyle(UNCATEGORIZED_CATEGORY)} />
+              <span>{UNCATEGORIZED_CATEGORY.name}</span>
+            </div>
+
+            {categoryMessage ? <p className="category-message">{categoryMessage}</p> : null}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  function renderCategoryPicker() {
+    return (
+      <div className="field-label category-field">
+        <span>Categoria</span>
+        <div className="category-picker">
+          <button
+            className="category-picker-button"
+            type="button"
+            onClick={() => {
+              setIsCategoryMenuOpen((current) => !current);
+              setIsCategoryManagerOpen(false);
+            }}
+          >
+            <span className="category-color-bar" style={categoryStyle(selectedCategory)} />
+            <span className="category-picker-name">{selectedCategory.name}</span>
+            <span className="category-picker-caret" aria-hidden="true">
+              {isCategoryMenuOpen ? "^" : "v"}
+            </span>
+          </button>
+
+          {isCategoryMenuOpen ? (
+            <div className="category-menu">
               <button
-                className="category-new-button"
-                disabled={dataLoading}
+                className="category-option"
+                data-active={categoryId === null}
                 type="button"
-                onClick={createCategory}
+                onClick={() => selectCategory(null)}
               >
-                Nueva categoria
+                <span className="category-color-bar" style={categoryStyle(UNCATEGORIZED_CATEGORY)} />
+                <span>{UNCATEGORIZED_CATEGORY.name}</span>
               </button>
+
+              {categories.map((item) => (
+                <button
+                  className="category-option"
+                  data-active={categoryId === item.id}
+                  key={item.id}
+                  type="button"
+                  onClick={() => selectCategory(item.id)}
+                >
+                  <span className="category-color-bar" style={categoryStyle(item)} />
+                  <span>{item.name}</span>
+                </button>
+              ))}
             </div>
           ) : null}
         </div>
-        {categoryMessage ? <span className="category-message">{categoryMessage}</span> : null}
       </div>
     );
   }
@@ -1656,6 +1698,7 @@ export default function Home() {
                 >
                   Editar nombre
                 </button>
+                {renderCategoryManager()}
               </div>
             )}
             <p className="mt-2 text-sm text-[#a7a29a]">

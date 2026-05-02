@@ -85,6 +85,54 @@ button:disabled:hover {
   gap: 10px;
 }
 
+.category-manager {
+  position: relative;
+}
+
+.category-manager-trigger {
+  min-height: 34px;
+}
+
+.category-manager-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 10px);
+  left: 0;
+  display: flex;
+  width: min(420px, calc(100vw - 32px));
+  max-height: min(520px, 75vh);
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  border: 1px solid #34312b;
+  border-radius: 8px;
+  background: #191816;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.34);
+  padding: 12px;
+}
+
+.category-manager-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #fffaf0;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.category-manager-header .category-new-button {
+  width: auto;
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+.category-manager-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .calendar-name-input {
   min-height: 44px;
   min-width: min(100%, 320px);
@@ -403,6 +451,10 @@ button:disabled:hover {
   background: #20372d;
 }
 
+.category-manage-option {
+  grid-template-columns: 8px minmax(0, 1fr);
+}
+
 .category-option-shell {
   display: flex;
   flex-direction: column;
@@ -448,6 +500,11 @@ button:disabled:hover {
   font-weight: 900;
   padding: 0 12px;
   text-align: center;
+}
+
+.category-neutral-preview {
+  color: #a7a29a;
+  cursor: default;
 }
 
 .category-message {
@@ -717,6 +774,14 @@ button:disabled:hover {
 
   .calendar-name-input {
     font-size: 22px;
+  }
+
+  .category-manager {
+    width: 100%;
+  }
+
+  .category-manager-menu {
+    width: calc(100vw - 32px);
   }
 
   .note-action-row {
