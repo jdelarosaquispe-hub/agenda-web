@@ -1,13 +1,20 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import { createClient, type Session } from "@supabase/supabase-js";
+
+type AgendaCategory = {
+  id: string;
+  name: string;
+  color: string;
+  updatedAt?: string;
+};
 
 type CalendarEvent = {
   id: string;
   title: string;
   time: string;
-  category: "Trabajo" | "Personal" | "Estudio" | "Salud";
+  categoryId: string | null;
   notes: string;
   done: boolean;
   hasReminder: boolean;
@@ -22,11 +29,19 @@ type AgendaEventRow = {
   date: string;
   title: string;
   event_time: string;
-  category: CalendarEvent["category"];
+  category: string | null;
+  category_id: string | null;
   notes: string | null;
   done: boolean;
   has_reminder: boolean | null;
   reminder_at: string | null;
+  updated_at: string | null;
+};
+
+type AgendaCategoryRow = {
+  id: string;
+  name: string;
+  color: string;
   updated_at: string | null;
 };
 
@@ -36,6 +51,7 @@ type DuplicateMode = "daily" | "custom-days";
 type EditorMode = "hidden" | "create" | "edit";
 
 const STORAGE_KEY = "agenda-web-events";
+const CATEGORY_STORAGE_KEY = "agenda-web-categories";
 const CALENDAR_NAME_KEY = "agenda-web-calendar-name";
 const DEFAULT_CALENDAR_NAME = "Calendario personal";
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -45,15 +61,23 @@ const supabaseKey =
 
 const weekdays = ["Lun", "Mar", "Mie", "Jue", "Vie", "Sab", "Dom"];
 const recurrenceWeekdays = weekdays.map((label, value) => ({ label, value }));
-const categories: CalendarEvent["category"][] = [
-  "Trabajo",
-  "Personal",
-  "Estudio",
-  "Salud",
+const DEFAULT_CATEGORIES: AgendaCategory[] = [
+  { id: "default-trabajo", name: "Trabajo", color: "#7dd3fc" },
+  { id: "default-personal", name: "Personal", color: "#ffd166" },
+  { id: "default-estudio", name: "Estudio", color: "#c4b5fd" },
+  { id: "default-salud", name: "Salud", color: "#86efac" },
 ];
+const UNCATEGORIZED_CATEGORY: AgendaCategory = {
+  id: "uncategorized",
+  name: "Sin categoria",
+  color: "#928c83",
+};
+const CATEGORY_NAME_FALLBACK = "Sin categoria";
+const NEW_CATEGORY_COLOR = "#44d7a8";
+const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
 const rowSelect =
-  "id,date,title,event_time,category,notes,done,has_reminder,reminder_at,updated_at";
+  "id,date,title,event_time,category,category_id,notes,done,has_reminder,reminder_at,updated_at";
 
 function toDateKey(date: Date) {
   const year = date.getFullYear();
@@ -177,20 +201,156 @@ function createMonthDays(monthDate: Date) {
   return days;
 }
 
-function normalizeCategory(value: unknown): CalendarEvent["category"] {
-  return categories.includes(value as CalendarEvent["category"])
-    ? (value as CalendarEvent["category"])
-    : "Trabajo";
+function normalizeCategoryName(value: unknown) {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
-function normalizeStoredEvent(event: Partial<CalendarEvent>) {
+function normalizeHexColor(value: unknown) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return HEX_COLOR_PATTERN.test(trimmed) ? trimmed.toLowerCase() : null;
+}
+
+function categoryNameExists(categories: AgendaCategory[], name: string, ignoredId?: string) {
+  const normalizedName = normalizeCategoryName(name);
+  return categories.some(
+    (category) =>
+      category.id !== ignoredId && normalizeCategoryName(category.name) === normalizedName,
+  );
+}
+
+function getDefaultCategoryId(categories: AgendaCategory[]) {
+  return categories[0]?.id ?? null;
+}
+
+function findCategoryByName(categories: AgendaCategory[], name: unknown) {
+  const normalizedName = normalizeCategoryName(name);
+  return categories.find((category) => normalizeCategoryName(category.name) === normalizedName);
+}
+
+function getCategoryDisplay(categories: AgendaCategory[], categoryId: string | null) {
+  if (!categoryId) {
+    return UNCATEGORIZED_CATEGORY;
+  }
+
+  return categories.find((category) => category.id === categoryId) ?? UNCATEGORIZED_CATEGORY;
+}
+
+function getCategoryName(categories: AgendaCategory[], categoryId: string | null) {
+  return getCategoryDisplay(categories, categoryId).name;
+}
+
+function hexToRgba(hex: string, opacity: number) {
+  const validHex = normalizeHexColor(hex) ?? UNCATEGORIZED_CATEGORY.color;
+  const red = Number.parseInt(validHex.slice(1, 3), 16);
+  const green = Number.parseInt(validHex.slice(3, 5), 16);
+  const blue = Number.parseInt(validHex.slice(5, 7), 16);
+
+  return `rgba(${red}, ${green}, ${blue}, ${opacity})`;
+}
+
+function categoryStyle(category: AgendaCategory): CSSProperties {
+  return {
+    "--category-color": category.color,
+    "--category-bg": hexToRgba(category.color, 0.18),
+  } as CSSProperties;
+}
+
+function makeUniqueCategoryName(categories: AgendaCategory[], baseName = "Nueva categoria") {
+  if (!categoryNameExists(categories, baseName)) {
+    return baseName;
+  }
+
+  for (let index = 2; index < 100; index += 1) {
+    const nextName = `${baseName} ${index}`;
+
+    if (!categoryNameExists(categories, nextName)) {
+      return nextName;
+    }
+  }
+
+  return `${baseName} ${crypto.randomUUID().slice(0, 4)}`;
+}
+
+function normalizeStoredCategory(category: Partial<AgendaCategory>) {
+  const fallback = DEFAULT_CATEGORIES[0];
+  const color = normalizeHexColor(category.color) ?? fallback.color;
+
+  return {
+    id: typeof category.id === "string" && category.id ? category.id : crypto.randomUUID(),
+    name:
+      typeof category.name === "string" && category.name.trim()
+        ? category.name.trim()
+        : fallback.name,
+    color,
+    updatedAt: typeof category.updatedAt === "string" ? category.updatedAt : undefined,
+  };
+}
+
+function parseLocalCategories(savedCategories: string | null) {
+  if (!savedCategories) {
+    return DEFAULT_CATEGORIES;
+  }
+
+  try {
+    const parsed = JSON.parse(savedCategories) as Partial<AgendaCategory>[];
+
+    if (!Array.isArray(parsed)) {
+      return DEFAULT_CATEGORIES;
+    }
+
+    const normalizedCategories = parsed.reduce<AgendaCategory[]>((items, category) => {
+      const normalizedCategory = normalizeStoredCategory(category);
+
+      if (!categoryNameExists(items, normalizedCategory.name)) {
+        items.push(normalizedCategory);
+      }
+
+      return items;
+    }, []);
+
+    return normalizedCategories;
+  } catch {
+    return DEFAULT_CATEGORIES;
+  }
+}
+
+function rowToCategory(row: AgendaCategoryRow): AgendaCategory {
+  return {
+    id: row.id,
+    name: row.name,
+    color: normalizeHexColor(row.color) ?? NEW_CATEGORY_COLOR,
+    updatedAt: row.updated_at ?? undefined,
+  };
+}
+
+type StoredCalendarEvent = Partial<CalendarEvent> & {
+  category?: string | null;
+  category_id?: string | null;
+};
+
+function normalizeStoredEvent(event: StoredCalendarEvent, categories: AgendaCategory[]) {
   const time = typeof event.time === "string" && event.time ? event.time : "09:00";
+  const legacyCategory = findCategoryByName(categories, event.category);
+  const storedCategoryExists =
+    typeof event.categoryId === "string" &&
+    categories.some((category) => category.id === event.categoryId);
+  const databaseCategoryExists =
+    typeof event.category_id === "string" &&
+    categories.some((category) => category.id === event.category_id);
 
   return {
     id: typeof event.id === "string" ? event.id : crypto.randomUUID(),
     title: typeof event.title === "string" && event.title ? event.title : "Nota",
     time,
-    category: normalizeCategory(event.category),
+    categoryId: storedCategoryExists
+      ? event.categoryId ?? null
+      : databaseCategoryExists
+        ? event.category_id ?? null
+        : legacyCategory?.id ?? null,
     notes: typeof event.notes === "string" ? event.notes : "",
     done: Boolean(event.done),
     hasReminder: Boolean(event.hasReminder),
@@ -199,12 +359,14 @@ function normalizeStoredEvent(event: Partial<CalendarEvent>) {
   };
 }
 
-function rowToEvent(row: AgendaEventRow): CalendarEvent {
+function rowToEvent(row: AgendaEventRow, categories: AgendaCategory[]): CalendarEvent {
+  const legacyCategory = findCategoryByName(categories, row.category);
+
   return {
     id: row.id,
     title: row.title,
     time: (row.event_time ?? "09:00").slice(0, 5),
-    category: row.category,
+    categoryId: row.category_id ?? legacyCategory?.id ?? null,
     notes: row.notes ?? "",
     done: row.done,
     hasReminder: Boolean(row.has_reminder),
@@ -213,11 +375,12 @@ function rowToEvent(row: AgendaEventRow): CalendarEvent {
   };
 }
 
-function rowsToEvents(rows: AgendaEventRow[]) {
+function rowsToEvents(rows: AgendaEventRow[], categories: AgendaCategory[]) {
   return rows.reduce<EventsByDate>((calendarEvents, row) => {
-    calendarEvents[row.date] = [...(calendarEvents[row.date] ?? []), rowToEvent(row)].sort((a, b) =>
-      a.time.localeCompare(b.time),
-    );
+    calendarEvents[row.date] = [
+      ...(calendarEvents[row.date] ?? []),
+      rowToEvent(row, categories),
+    ].sort((a, b) => a.time.localeCompare(b.time));
     return calendarEvents;
   }, {});
 }
@@ -277,19 +440,28 @@ function removeEventFromDate(events: EventsByDate, date: string, eventId: string
   return nextEvents;
 }
 
-function parseLocalEvents(savedEvents: string | null) {
+function clearCategoryFromEvents(events: EventsByDate, categoryId: string) {
+  return Object.entries(events).reduce<EventsByDate>((nextEvents, [date, dayEvents]) => {
+    nextEvents[date] = dayEvents.map((event) =>
+      event.categoryId === categoryId ? { ...event, categoryId: null } : event,
+    );
+    return nextEvents;
+  }, {});
+}
+
+function parseLocalEvents(savedEvents: string | null, categories: AgendaCategory[]) {
   if (!savedEvents) {
     return {};
   }
 
   try {
-    const parsed = JSON.parse(savedEvents) as Record<string, Partial<CalendarEvent>[]>;
+    const parsed = JSON.parse(savedEvents) as Record<string, StoredCalendarEvent[]>;
 
     return Object.entries(parsed).reduce<EventsByDate>((calendarEvents, [date, dayEvents]) => {
       if (Array.isArray(dayEvents)) {
-        calendarEvents[date] = dayEvents.map(normalizeStoredEvent).sort((a, b) =>
-          a.time.localeCompare(b.time),
-        );
+        calendarEvents[date] = dayEvents
+          .map((dayEvent) => normalizeStoredEvent(dayEvent, categories))
+          .sort((a, b) => a.time.localeCompare(b.time));
       }
 
       return calendarEvents;
@@ -308,12 +480,13 @@ function reminderToDatabase(hasReminder: boolean, reminderAt: string) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-function makeEventPayload(date: string, draft: EventDraft) {
+function makeEventPayload(date: string, draft: EventDraft, categories: AgendaCategory[]) {
   return {
     date,
     title: draft.title,
     event_time: draft.time,
-    category: draft.category,
+    category: getCategoryName(categories, draft.categoryId),
+    category_id: draft.categoryId,
     notes: draft.notes,
     done: draft.done,
     has_reminder: draft.hasReminder,
@@ -327,7 +500,7 @@ function makeDraftForDate(event: CalendarEvent, date: string): EventDraft {
   return {
     title: event.title,
     time: event.time,
-    category: event.category,
+    categoryId: event.categoryId,
     notes: event.notes,
     done: false,
     hasReminder: event.hasReminder,
@@ -348,6 +521,7 @@ export default function Home() {
   const [monthDate, setMonthDate] = useState(() => new Date());
   const [selectedDate, setSelectedDate] = useState(todayKey);
   const [events, setEvents] = useState<EventsByDate>({});
+  const [categories, setCategories] = useState<AgendaCategory[]>(DEFAULT_CATEGORIES);
   const [session, setSession] = useState<Session | null>(null);
   const [calendarName, setCalendarName] = useState(DEFAULT_CALENDAR_NAME);
   const [calendarNameDraft, setCalendarNameDraft] = useState(DEFAULT_CALENDAR_NAME);
@@ -356,7 +530,12 @@ export default function Home() {
   const [editorMode, setEditorMode] = useState<EditorMode>("hidden");
   const [title, setTitle] = useState("");
   const [time, setTime] = useState("09:00");
-  const [category, setCategory] = useState<CalendarEvent["category"]>("Trabajo");
+  const [categoryId, setCategoryId] = useState<string | null>(DEFAULT_CATEGORIES[0].id);
+  const [isCategoryMenuOpen, setIsCategoryMenuOpen] = useState(false);
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
+  const [categoryNameDraft, setCategoryNameDraft] = useState("");
+  const [categoryColorDraft, setCategoryColorDraft] = useState(NEW_CATEGORY_COLOR);
+  const [categoryMessage, setCategoryMessage] = useState("");
   const [notes, setNotes] = useState("");
   const [hasReminder, setHasReminder] = useState(false);
   const [reminderAt, setReminderAt] = useState(defaultReminderAt(todayKey));
@@ -372,6 +551,7 @@ export default function Home() {
   const [isMounted, setIsMounted] = useState(false);
   const [dataLoading, setDataLoading] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
+  const categoriesRef = useRef(DEFAULT_CATEGORIES);
 
   const selectedDateObject = useMemo(() => fromDateKey(selectedDate), [selectedDate]);
   const monthDays = useMemo(() => createMonthDays(monthDate), [monthDate]);
@@ -380,6 +560,10 @@ export default function Home() {
   const selectedEvent = selectedEvents.find((event) => event.id === editingEventId) ?? null;
   const weekRange = `${formatShortDate(weekDays[0])} - ${formatShortDate(weekDays[6])}`;
   const userId = session?.user.id;
+  const selectedCategory = useMemo(
+    () => getCategoryDisplay(categories, categoryId),
+    [categories, categoryId],
+  );
 
   useEffect(() => {
     let ignore = false;
@@ -395,10 +579,15 @@ export default function Home() {
       }
 
       if (!supabase) {
+        const localCategories = parseLocalCategories(
+          window.localStorage.getItem(CATEGORY_STORAGE_KEY),
+        );
         const savedEvents = window.localStorage.getItem(STORAGE_KEY);
 
         if (!ignore) {
-          setEvents(parseLocalEvents(savedEvents));
+          setCategories(localCategories);
+          setCategoryId(getDefaultCategoryId(localCategories));
+          setEvents(parseLocalEvents(savedEvents, localCategories));
           setIsMounted(true);
         }
 
@@ -426,6 +615,7 @@ export default function Home() {
 
       if (!nextSession) {
         setEvents({});
+        setCategories(DEFAULT_CATEGORIES);
       }
     });
 
@@ -442,6 +632,16 @@ export default function Home() {
   }, [events, isMounted, supabase]);
 
   useEffect(() => {
+    categoriesRef.current = categories;
+  }, [categories]);
+
+  useEffect(() => {
+    if (!supabase && isMounted) {
+      window.localStorage.setItem(CATEGORY_STORAGE_KEY, JSON.stringify(categories));
+    }
+  }, [categories, isMounted, supabase]);
+
+  useEffect(() => {
     if (isMounted) {
       window.localStorage.setItem(CALENDAR_NAME_KEY, calendarName);
     }
@@ -455,9 +655,60 @@ export default function Home() {
     const client = supabase;
     let ignore = false;
 
-    async function loadEvents() {
+    async function loadCategories() {
+      const { data, error } = await client
+        .from("agenda_categories")
+        .select("id,name,color,updated_at")
+        .order("name", { ascending: true });
+
+      if (error) {
+        throw new Error(error.message);
+      }
+
+      const loadedCategories = ((data ?? []) as AgendaCategoryRow[]).map(rowToCategory);
+
+      if (loadedCategories.length > 0) {
+        return loadedCategories;
+      }
+
+      const { data: insertedData, error: insertError } = await client
+        .from("agenda_categories")
+        .insert(
+          DEFAULT_CATEGORIES.map((category) => ({
+            user_id: userId,
+            name: category.name,
+            color: category.color,
+          })),
+        )
+        .select("id,name,color,updated_at");
+
+      if (insertError) {
+        throw new Error(insertError.message);
+      }
+
+      return [...loadedCategories, ...((insertedData ?? []) as AgendaCategoryRow[]).map(rowToCategory)]
+        .sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    async function loadAgenda() {
       setDataLoading(true);
       setSyncMessage("");
+
+      let loadedCategories: AgendaCategory[];
+
+      try {
+        loadedCategories = await loadCategories();
+      } catch (error) {
+        if (!ignore) {
+          setSyncMessage(
+            `No se pudieron cargar tus categorias: ${
+              error instanceof Error ? error.message : "intenta otra vez"
+            }`,
+          );
+          setDataLoading(false);
+        }
+        return;
+      }
 
       const { data, error } = await client
         .from("agenda_events")
@@ -472,13 +723,19 @@ export default function Home() {
       if (error) {
         setSyncMessage(`No se pudieron cargar tus notas: ${error.message}`);
       } else {
-        setEvents(rowsToEvents((data ?? []) as AgendaEventRow[]));
+        setCategories(loadedCategories);
+        setCategoryId((current) =>
+          current && loadedCategories.some((category) => category.id === current)
+            ? current
+            : getDefaultCategoryId(loadedCategories),
+        );
+        setEvents(rowsToEvents((data ?? []) as AgendaEventRow[], loadedCategories));
       }
 
       setDataLoading(false);
     }
 
-    void loadEvents();
+    void loadAgenda();
 
     return () => {
       ignore = true;
@@ -499,7 +756,10 @@ export default function Home() {
       setEditorMode("hidden");
       setTitle("");
       setTime("09:00");
-      setCategory("Trabajo");
+      setCategoryId(getDefaultCategoryId(categoriesRef.current));
+      setIsCategoryMenuOpen(false);
+      setEditingCategoryId(null);
+      setCategoryMessage("");
       setNotes("");
       setHasReminder(false);
       setReminderAt(defaultReminderAt(selectedDate));
@@ -552,7 +812,10 @@ export default function Home() {
   function resetNoteForm() {
     setTitle("");
     setTime("09:00");
-    setCategory("Trabajo");
+    setCategoryId(getDefaultCategoryId(categories));
+    setIsCategoryMenuOpen(false);
+    setEditingCategoryId(null);
+    setCategoryMessage("");
     setNotes("");
     setHasReminder(false);
     setReminderAt(defaultReminderAt(selectedDate));
@@ -575,19 +838,13 @@ export default function Home() {
     setEditorMode("edit");
     setTitle(calendarEvent.title);
     setTime(calendarEvent.time);
-    setCategory(calendarEvent.category);
+    setCategoryId(calendarEvent.categoryId);
+    setIsCategoryMenuOpen(false);
+    setEditingCategoryId(null);
+    setCategoryMessage("");
     setNotes(calendarEvent.notes);
     setHasReminder(calendarEvent.hasReminder);
     setReminderAt(calendarEvent.reminderAt || defaultReminderAt(selectedDate, calendarEvent.time));
-  }
-
-  function selectSavedNote(calendarEvent: CalendarEvent) {
-    if (editingEventId === calendarEvent.id) {
-      cancelEditor();
-      return;
-    }
-
-    fillEditor(calendarEvent);
   }
 
   function toggleDuplicateWeekday(weekday: number) {
@@ -606,7 +863,7 @@ export default function Home() {
     return {
       title: title.trim(),
       time,
-      category,
+      categoryId,
       notes: notes.trim(),
       done,
       hasReminder,
@@ -704,7 +961,7 @@ export default function Home() {
       if (existingEvent) {
         const { data, error } = await supabase
           .from("agenda_events")
-          .update(makeEventPayload(selectedDate, localEvent))
+          .update(makeEventPayload(selectedDate, localEvent, categories))
           .eq("id", existingEvent.id)
           .eq("user_id", session.user.id)
           .select(rowSelect)
@@ -716,7 +973,7 @@ export default function Home() {
           return;
         }
 
-        const savedEvent = rowToEvent(data as AgendaEventRow);
+        const savedEvent = rowToEvent(data as AgendaEventRow, categories);
         setEvents((current) => replaceEventInDate(current, selectedDate, existingEvent.id, savedEvent));
         setEditingEventId(savedEvent.id);
         setEditorMode("edit");
@@ -728,7 +985,7 @@ export default function Home() {
         .from("agenda_events")
         .insert({
           user_id: session.user.id,
-          ...makeEventPayload(selectedDate, localEvent),
+          ...makeEventPayload(selectedDate, localEvent, categories),
         })
         .select(rowSelect)
         .single();
@@ -740,7 +997,7 @@ export default function Home() {
         return;
       }
 
-      const savedEvent = rowToEvent(data as AgendaEventRow);
+      const savedEvent = rowToEvent(data as AgendaEventRow, categories);
       setEvents((current) => addEventToDate(current, selectedDate, savedEvent));
       setEditingEventId(savedEvent.id);
       setEditorMode("edit");
@@ -767,7 +1024,7 @@ export default function Home() {
       if (existingTarget) {
         const { data, error } = await supabase
           .from("agenda_events")
-          .update(makeEventPayload(targetDate, localEvent))
+          .update(makeEventPayload(targetDate, localEvent, categories))
           .eq("id", existingTarget.id)
           .eq("user_id", session.user.id)
           .select(rowSelect)
@@ -783,14 +1040,14 @@ export default function Home() {
           throw new Error(cleanupError.message);
         }
 
-        return rowToEvent(data as AgendaEventRow);
+        return rowToEvent(data as AgendaEventRow, categories);
       }
 
       const { data, error } = await supabase
         .from("agenda_events")
         .insert({
           user_id: session.user.id,
-          ...makeEventPayload(targetDate, localEvent),
+          ...makeEventPayload(targetDate, localEvent, categories),
         })
         .select(rowSelect)
         .single();
@@ -799,7 +1056,7 @@ export default function Home() {
         throw new Error(error?.message ?? "No se pudo duplicar la nota.");
       }
 
-      return rowToEvent(data as AgendaEventRow);
+      return rowToEvent(data as AgendaEventRow, categories);
     }
 
     return localEvent;
@@ -921,6 +1178,300 @@ export default function Home() {
     }
   }
 
+  function startCategoryEdit(category: AgendaCategory) {
+    setEditingCategoryId(category.id);
+    setCategoryNameDraft(category.name);
+    setCategoryColorDraft(category.color);
+    setCategoryMessage("");
+  }
+
+  function selectCategory(nextCategoryId: string | null) {
+    setCategoryId(nextCategoryId);
+
+    if (!nextCategoryId) {
+      setEditingCategoryId(null);
+      setCategoryMessage("");
+      setIsCategoryMenuOpen(false);
+      return;
+    }
+
+    const nextCategory = categories.find((item) => item.id === nextCategoryId);
+
+    if (nextCategory) {
+      startCategoryEdit(nextCategory);
+    }
+  }
+
+  async function createCategory() {
+    const name = makeUniqueCategoryName(categories);
+    const localCategory: AgendaCategory = {
+      id: crypto.randomUUID(),
+      name,
+      color: NEW_CATEGORY_COLOR,
+    };
+
+    setDataLoading(true);
+    setCategoryMessage("");
+
+    if (supabase && session) {
+      const { data, error } = await supabase
+        .from("agenda_categories")
+        .insert({
+          user_id: session.user.id,
+          name,
+          color: NEW_CATEGORY_COLOR,
+        })
+        .select("id,name,color,updated_at")
+        .single();
+
+      setDataLoading(false);
+
+      if (error || !data) {
+        setCategoryMessage(`No se pudo crear la categoria: ${error?.message ?? "intenta otra vez"}`);
+        return;
+      }
+
+      const savedCategory = rowToCategory(data as AgendaCategoryRow);
+      setCategories((current) => [...current, savedCategory].sort((a, b) => a.name.localeCompare(b.name)));
+      setCategoryId(savedCategory.id);
+      startCategoryEdit(savedCategory);
+      return;
+    }
+
+    setCategories((current) => [...current, localCategory].sort((a, b) => a.name.localeCompare(b.name)));
+    setCategoryId(localCategory.id);
+    startCategoryEdit(localCategory);
+    setDataLoading(false);
+  }
+
+  async function saveCategory(nextCategoryId: string) {
+    const nextName = categoryNameDraft.trim();
+    const nextColor = normalizeHexColor(categoryColorDraft);
+
+    if (!nextName) {
+      setCategoryMessage("El nombre de la categoria no puede estar vacio.");
+      return;
+    }
+
+    if (!nextColor) {
+      setCategoryMessage("Usa un color hexadecimal valido, por ejemplo #44d7a8.");
+      return;
+    }
+
+    if (categoryNameExists(categories, nextName, nextCategoryId)) {
+      setCategoryMessage("Ya existe una categoria con ese nombre.");
+      return;
+    }
+
+    setDataLoading(true);
+    setCategoryMessage("");
+
+    if (supabase && session) {
+      const { data, error } = await supabase
+        .from("agenda_categories")
+        .update({ name: nextName, color: nextColor })
+        .eq("id", nextCategoryId)
+        .eq("user_id", session.user.id)
+        .select("id,name,color,updated_at")
+        .single();
+
+      if (error || !data) {
+        setDataLoading(false);
+        setCategoryMessage(`No se pudo guardar la categoria: ${error?.message ?? "intenta otra vez"}`);
+        return;
+      }
+
+      const savedCategory = rowToCategory(data as AgendaCategoryRow);
+      const { error: eventUpdateError } = await supabase
+        .from("agenda_events")
+        .update({ category: savedCategory.name })
+        .eq("category_id", nextCategoryId)
+        .eq("user_id", session.user.id);
+
+      setDataLoading(false);
+
+      if (eventUpdateError) {
+        setCategoryMessage(`La categoria se guardo, pero no se actualizo en notas antiguas: ${eventUpdateError.message}`);
+      }
+
+      setCategories((current) =>
+        current
+          .map((item) => (item.id === nextCategoryId ? savedCategory : item))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      );
+      setEditingCategoryId(null);
+      return;
+    }
+
+    setCategories((current) =>
+      current
+        .map((item) =>
+          item.id === nextCategoryId ? { ...item, name: nextName, color: nextColor } : item,
+        )
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    );
+    setEditingCategoryId(null);
+    setDataLoading(false);
+  }
+
+  async function deleteCategory(nextCategoryId: string) {
+    setDataLoading(true);
+    setCategoryMessage("");
+
+    if (supabase && session) {
+      const { error: updateError } = await supabase
+        .from("agenda_events")
+        .update({ category_id: null, category: CATEGORY_NAME_FALLBACK })
+        .eq("category_id", nextCategoryId)
+        .eq("user_id", session.user.id);
+
+      if (updateError) {
+        setDataLoading(false);
+        setCategoryMessage(`No se pudo limpiar la categoria en tus notas: ${updateError.message}`);
+        return;
+      }
+
+      const { error: deleteError } = await supabase
+        .from("agenda_categories")
+        .delete()
+        .eq("id", nextCategoryId)
+        .eq("user_id", session.user.id);
+
+      setDataLoading(false);
+
+      if (deleteError) {
+        setCategoryMessage(`No se pudo eliminar la categoria: ${deleteError.message}`);
+        return;
+      }
+    } else {
+      setDataLoading(false);
+    }
+
+    setCategories((current) => current.filter((item) => item.id !== nextCategoryId));
+    setEvents((current) => clearCategoryFromEvents(current, nextCategoryId));
+    setCategoryId((current) => (current === nextCategoryId ? null : current));
+    setEditingCategoryId(null);
+  }
+
+  function renderCategoryPicker() {
+    return (
+      <div className="field-label category-field">
+        <span>Categoria</span>
+        <div className="category-picker">
+          <button
+            className="category-picker-button"
+            type="button"
+            onClick={() => setIsCategoryMenuOpen((current) => !current)}
+          >
+            <span className="category-color-bar" style={categoryStyle(selectedCategory)} />
+            <span className="category-picker-name">{selectedCategory.name}</span>
+            <span className="category-picker-caret" aria-hidden="true">
+              {isCategoryMenuOpen ? "^" : "v"}
+            </span>
+          </button>
+
+          {isCategoryMenuOpen ? (
+            <div className="category-menu">
+              <button
+                className="category-option"
+                data-active={categoryId === null}
+                type="button"
+                onClick={() => selectCategory(null)}
+              >
+                <span className="category-color-bar" style={categoryStyle(UNCATEGORIZED_CATEGORY)} />
+                <span>{UNCATEGORIZED_CATEGORY.name}</span>
+              </button>
+
+              {categories.map((item) => {
+                const isEditingCategory = editingCategoryId === item.id;
+
+                return (
+                  <div className="category-option-shell" key={item.id}>
+                    <button
+                      className="category-option"
+                      data-active={categoryId === item.id}
+                      type="button"
+                      onClick={() => selectCategory(item.id)}
+                    >
+                      <span className="category-color-bar" style={categoryStyle(item)} />
+                      <span>{item.name}</span>
+                    </button>
+
+                    {isEditingCategory ? (
+                      <div className="category-editor">
+                        <input
+                          className="field-input category-name-input"
+                          value={categoryNameDraft}
+                          onChange={(event) => setCategoryNameDraft(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              void saveCategory(item.id);
+                            }
+                          }}
+                          aria-label="Nombre de categoria"
+                        />
+                        <input
+                          className="category-color-input"
+                          type="color"
+                          value={categoryColorDraft}
+                          onChange={(event) => setCategoryColorDraft(event.target.value)}
+                          aria-label="Color de categoria"
+                        />
+                        <button
+                          className="small-button"
+                          disabled={dataLoading}
+                          type="button"
+                          onClick={() => saveCategory(item.id)}
+                        >
+                          Guardar
+                        </button>
+                        <button
+                          className="danger-button compact-action"
+                          disabled={dataLoading}
+                          type="button"
+                          onClick={() => deleteCategory(item.id)}
+                        >
+                          Eliminar
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+
+              <button
+                className="category-new-button"
+                disabled={dataLoading}
+                type="button"
+                onClick={createCategory}
+              >
+                Nueva categoria
+              </button>
+            </div>
+          ) : null}
+        </div>
+        {categoryMessage ? <span className="category-message">{categoryMessage}</span> : null}
+      </div>
+    );
+  }
+
+  function renderCategoryChip(nextCategoryId: string | null) {
+    const item = getCategoryDisplay(categories, nextCategoryId);
+
+    return (
+      <span className="category-chip" style={categoryStyle(item)}>
+        {item.name}
+      </span>
+    );
+  }
+
+  function renderEventDot(calendarEvent: CalendarEvent) {
+    const item = getCategoryDisplay(categories, calendarEvent.categoryId);
+
+    return <span className="event-dot" key={calendarEvent.id} style={categoryStyle(item)} />;
+  }
+
   function renderNoteForm() {
     return (
       <form className="mt-4 flex flex-col gap-4" onSubmit={saveEvent}>
@@ -953,18 +1504,7 @@ export default function Home() {
             />
           </label>
 
-          <label className="field-label">
-            Categoria
-            <select
-              className="field-input"
-              value={category}
-              onChange={(event) => setCategory(event.target.value as CalendarEvent["category"])}
-            >
-              {categories.map((item) => (
-                <option key={item}>{item}</option>
-              ))}
-            </select>
-          </label>
+          {renderCategoryPicker()}
         </div>
 
         <label className="field-label">
@@ -1228,13 +1768,7 @@ export default function Home() {
                         <span className={isToday ? "today-pill" : ""}>{date.getDate()}</span>
                         {dayEvents.length > 0 ? (
                           <span className="day-note-mark">
-                            {dayEvents.slice(0, 3).map((dayEvent) => (
-                              <span
-                                className="event-dot"
-                                data-category={dayEvent.category}
-                                key={dayEvent.id}
-                              />
-                            ))}
+                            {dayEvents.slice(0, 3).map(renderEventDot)}
                             {dayEvents.some((dayEvent) => dayEvent.hasReminder) ? (
                               <span className="reminder-dot" />
                             ) : null}
@@ -1279,9 +1813,7 @@ export default function Home() {
                                   </p>
                                 ) : null}
                                 <div className="week-note-footer">
-                                  <span className="category-chip" data-category={calendarEvent.category}>
-                                    {calendarEvent.category}
-                                  </span>
+                                  {renderCategoryChip(calendarEvent.categoryId)}
                                   <button
                                     className="success-button compact-action"
                                     data-active={calendarEvent.done}
@@ -1326,18 +1858,6 @@ export default function Home() {
                         {isEditingNote ? (
                           <>
                             <div className="saved-note-edit-header">
-                              <label className="note-selection-check">
-                                <input
-                                  aria-label={`Dejar de modificar ${calendarEvent.title}`}
-                                  checked
-                                  className="h-4 w-4 accent-[#44d7a8]"
-                                  name="selected-note"
-                                  type="checkbox"
-                                  onChange={() => selectSavedNote(calendarEvent)}
-                                />
-                                <span>Modificando</span>
-                              </label>
-
                               <div className="saved-note-actions horizontal">
                                 <button
                                   className="success-button"
@@ -1361,14 +1881,6 @@ export default function Home() {
                           </>
                         ) : (
                           <div className="saved-note-row">
-                            <input
-                              aria-label={`Seleccionar ${calendarEvent.title} para modificar`}
-                              checked={false}
-                              className="mt-1 h-4 w-4 accent-[#44d7a8]"
-                              name="selected-note"
-                              type="checkbox"
-                              onChange={() => selectSavedNote(calendarEvent)}
-                            />
                             <button
                               className="saved-note-open"
                               type="button"
@@ -1376,9 +1888,7 @@ export default function Home() {
                             >
                               <span className="saved-note-title-row">
                                 <span className="saved-note-title">{calendarEvent.title}</span>
-                                <span className="category-chip" data-category={calendarEvent.category}>
-                                  {calendarEvent.category}
-                                </span>
+                                {renderCategoryChip(calendarEvent.categoryId)}
                               </span>
                               <span className="saved-note-time">{calendarEvent.time}</span>
                               {calendarEvent.hasReminder && calendarEvent.reminderAt ? (
