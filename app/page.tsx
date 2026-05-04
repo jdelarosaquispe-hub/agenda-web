@@ -385,13 +385,6 @@ function rowsToEvents(rows: AgendaEventRow[], categories: AgendaCategory[]) {
   }, {});
 }
 
-function setSingleEventForDate(events: EventsByDate, date: string, event: CalendarEvent) {
-  return {
-    ...events,
-    [date]: [event],
-  };
-}
-
 function addEventToDate(events: EventsByDate, date: string, event: CalendarEvent) {
   return {
     ...events,
@@ -884,28 +877,6 @@ export default function Home() {
     return dates.filter((date) => selectedWeekdays.has(getWeekdayIndex(fromDateKey(date))));
   }
 
-  async function deleteExtraRemoteEvents(date: string, keepEventId: string) {
-    if (!supabase || !session) {
-      return null;
-    }
-
-    const extraIds = (events[date] ?? [])
-      .filter((event) => event.id !== keepEventId)
-      .map((event) => event.id);
-
-    if (extraIds.length === 0) {
-      return null;
-    }
-
-    const { error } = await supabase
-      .from("agenda_events")
-      .delete()
-      .eq("user_id", session.user.id)
-      .in("id", extraIds);
-
-    return error;
-  }
-
   async function signInWithEmail(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -1016,35 +987,12 @@ export default function Home() {
   }
 
   async function saveDuplicateToDate(targetDate: string, draft: EventDraft) {
-    const existingTarget = events[targetDate]?.[0] ?? null;
     const localEvent: CalendarEvent = {
       ...draft,
-      id: existingTarget?.id ?? crypto.randomUUID(),
+      id: crypto.randomUUID(),
     };
 
     if (supabase && session) {
-      if (existingTarget) {
-        const { data, error } = await supabase
-          .from("agenda_events")
-          .update(makeEventPayload(targetDate, localEvent, categories))
-          .eq("id", existingTarget.id)
-          .eq("user_id", session.user.id)
-          .select(rowSelect)
-          .single();
-
-        if (error || !data) {
-          throw new Error(error?.message ?? "No se pudo sobrescribir la nota.");
-        }
-
-        const cleanupError = await deleteExtraRemoteEvents(targetDate, existingTarget.id);
-
-        if (cleanupError) {
-          throw new Error(cleanupError.message);
-        }
-
-        return rowToEvent(data as AgendaEventRow, categories);
-      }
-
       const { data, error } = await supabase
         .from("agenda_events")
         .insert({
@@ -1089,18 +1037,6 @@ export default function Home() {
       return;
     }
 
-    const occupiedTargets = targets.filter((date) => (events[date] ?? []).length > 0);
-
-    if (occupiedTargets.length > 0) {
-      const confirmed = window.confirm(
-        `Ya existe una nota en: ${occupiedTargets.map(formatLongDate).join(", ")}. Deseas sobrescribirla?`,
-      );
-
-      if (!confirmed) {
-        return;
-      }
-    }
-
     setDataLoading(true);
     setDuplicateMessage("");
 
@@ -1114,7 +1050,7 @@ export default function Home() {
 
       setEvents((current) =>
         savedEvents.reduce(
-          (nextEvents, item) => setSingleEventForDate(nextEvents, item.date, item.event),
+          (nextEvents, item) => addEventToDate(nextEvents, item.date, item.event),
           current,
         ),
       );
