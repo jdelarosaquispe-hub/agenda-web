@@ -14,6 +14,7 @@ create table if not exists public.agenda_events (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
   date date not null,
+  kind text not null default 'scheduled' check (kind in ('scheduled', 'free')),
   title text not null default 'Nota',
   event_time time not null default '09:00',
   category text not null default 'Sin categoria',
@@ -25,6 +26,16 @@ create table if not exists public.agenda_events (
   created_at timestamptz not null default timezone('utc', now()),
   updated_at timestamptz not null default timezone('utc', now())
 );
+
+alter table public.agenda_events
+  add column if not exists kind text not null default 'scheduled';
+
+alter table public.agenda_events
+  drop constraint if exists agenda_events_kind_check;
+
+alter table public.agenda_events
+  add constraint agenda_events_kind_check
+  check (kind in ('scheduled', 'free'));
 
 alter table public.agenda_events
   add column if not exists title text not null default 'Nota';

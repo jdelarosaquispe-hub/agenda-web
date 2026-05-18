@@ -12,6 +12,7 @@ type AgendaCategory = {
 
 type CalendarEvent = {
   id: string;
+  kind: NoteKind;
   title: string;
   time: string;
   categoryId: string | null;
@@ -27,6 +28,7 @@ type EventDraft = Omit<CalendarEvent, "id" | "updatedAt">;
 type AgendaEventRow = {
   id: string;
   date: string;
+  kind: string | null;
   title: string;
   event_time: string;
   category: string | null;
@@ -49,6 +51,7 @@ type EventsByDate = Record<string, CalendarEvent[]>;
 type CalendarView = "month" | "week";
 type DuplicateMode = "daily" | "custom-days";
 type EditorMode = "hidden" | "create" | "edit";
+type NoteKind = "scheduled" | "free";
 
 const STORAGE_KEY = "agenda-web-events";
 const CATEGORY_STORAGE_KEY = "agenda-web-categories";
@@ -75,9 +78,11 @@ const UNCATEGORIZED_CATEGORY: AgendaCategory = {
 const CATEGORY_NAME_FALLBACK = "Sin categoria";
 const NEW_CATEGORY_COLOR = "#44d7a8";
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
+const DEFAULT_FREE_NOTE_TITLE = "Nota libre";
+const DEFAULT_FREE_NOTE_TIME = "23:59";
 
 const rowSelect =
-  "id,date,title,event_time,category,category_id,notes,done,has_reminder,reminder_at,updated_at";
+  "id,date,kind,title,event_time,category,category_id,notes,done,has_reminder,reminder_at,updated_at";
 
 function toDateKey(date: Date) {
   const year = date.getFullYear();
@@ -203,6 +208,14 @@ function createMonthDays(monthDate: Date) {
 
 function normalizeCategoryName(value: unknown) {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function normalizeNoteKind(value: unknown): NoteKind {
+  return value === "free" ? "free" : "scheduled";
+}
+
+function isFreeNote(calendarEvent: Pick<CalendarEvent, "kind">) {
+  return calendarEvent.kind === "free";
 }
 
 function normalizeHexColor(value: unknown) {
@@ -333,7 +346,13 @@ type StoredCalendarEvent = Partial<CalendarEvent> & {
 };
 
 function normalizeStoredEvent(event: StoredCalendarEvent, categories: AgendaCategory[]) {
-  const time = typeof event.time === "string" && event.time ? event.time : "09:00";
+  const kind = normalizeNoteKind(event.kind);
+  const isFree = kind === "free";
+  const time = isFree
+    ? DEFAULT_FREE_NOTE_TIME
+    : typeof event.time === "string" && event.time
+      ? event.time
+      : "09:00";
   const legacyCategory = findCategoryByName(categories, event.category);
   const storedCategoryExists =
     typeof event.categoryId === "string" &&
@@ -344,35 +363,61 @@ function normalizeStoredEvent(event: StoredCalendarEvent, categories: AgendaCate
 
   return {
     id: typeof event.id === "string" ? event.id : crypto.randomUUID(),
-    title: typeof event.title === "string" && event.title ? event.title : "Nota",
+    kind,
+    title: isFree
+      ? DEFAULT_FREE_NOTE_TITLE
+      : typeof event.title === "string" && event.title
+        ? event.title
+        : "Nota",
     time,
-    categoryId: storedCategoryExists
-      ? event.categoryId ?? null
-      : databaseCategoryExists
-        ? event.category_id ?? null
-        : legacyCategory?.id ?? null,
+    categoryId: isFree
+      ? null
+      : storedCategoryExists
+        ? event.categoryId ?? null
+        : databaseCategoryExists
+          ? event.category_id ?? null
+          : legacyCategory?.id ?? null,
     notes: typeof event.notes === "string" ? event.notes : "",
     done: Boolean(event.done),
-    hasReminder: Boolean(event.hasReminder),
-    reminderAt: typeof event.reminderAt === "string" ? event.reminderAt : "",
+    hasReminder: isFree ? false : Boolean(event.hasReminder),
+    reminderAt: !isFree && typeof event.reminderAt === "string" ? event.reminderAt : "",
     updatedAt: typeof event.updatedAt === "string" ? event.updatedAt : undefined,
   };
 }
 
 function rowToEvent(row: AgendaEventRow, categories: AgendaCategory[]): CalendarEvent {
+  const kind = normalizeNoteKind(row.kind);
+  const isFree = kind === "free";
   const legacyCategory = findCategoryByName(categories, row.category);
 
   return {
     id: row.id,
-    title: row.title,
-    time: (row.event_time ?? "09:00").slice(0, 5),
-    categoryId: row.category_id ?? legacyCategory?.id ?? null,
+    kind,
+    title: isFree ? DEFAULT_FREE_NOTE_TITLE : row.title,
+    time: isFree ? DEFAULT_FREE_NOTE_TIME : (row.event_time ?? "09:00").slice(0, 5),
+    categoryId: isFree ? null : row.category_id ?? legacyCategory?.id ?? null,
     notes: row.notes ?? "",
     done: row.done,
-    hasReminder: Boolean(row.has_reminder),
-    reminderAt: row.reminder_at ? formatDateTimeForInput(new Date(row.reminder_at)) : "",
+    hasReminder: isFree ? false : Boolean(row.has_reminder),
+    reminderAt: !isFree && row.reminder_at ? formatDateTimeForInput(new Date(row.reminder_at)) : "",
     updatedAt: row.updated_at ?? undefined,
   };
+}
+
+function sortEvents(dayEvents: CalendarEvent[]) {
+  return [...dayEvents].sort((firstEvent, secondEvent) => {
+    if (firstEvent.kind !== secondEvent.kind) {
+      return firstEvent.kind === "scheduled" ? -1 : 1;
+    }
+
+    const timeComparison = firstEvent.time.localeCompare(secondEvent.time);
+
+    if (timeComparison !== 0) {
+      return timeComparison;
+    }
+
+    return firstEvent.title.localeCompare(secondEvent.title);
+  });
 }
 
 function rowsToEvents(rows: AgendaEventRow[], categories: AgendaCategory[]) {
@@ -380,7 +425,8 @@ function rowsToEvents(rows: AgendaEventRow[], categories: AgendaCategory[]) {
     calendarEvents[row.date] = [
       ...(calendarEvents[row.date] ?? []),
       rowToEvent(row, categories),
-    ].sort((a, b) => a.time.localeCompare(b.time));
+    ];
+    calendarEvents[row.date] = sortEvents(calendarEvents[row.date]);
     return calendarEvents;
   }, {});
 }
@@ -388,7 +434,7 @@ function rowsToEvents(rows: AgendaEventRow[], categories: AgendaCategory[]) {
 function addEventToDate(events: EventsByDate, date: string, event: CalendarEvent) {
   return {
     ...events,
-    [date]: [...(events[date] ?? []), event].sort((a, b) => a.time.localeCompare(b.time)),
+    [date]: sortEvents([...(events[date] ?? []), event]),
   };
 }
 
@@ -405,9 +451,7 @@ function replaceEventInDate(
 
   return {
     ...events,
-    [date]: (eventExists ? updatedEvents : [...updatedEvents, nextEvent]).sort((a, b) =>
-      a.time.localeCompare(b.time),
-    ),
+    [date]: sortEvents(eventExists ? updatedEvents : [...updatedEvents, nextEvent]),
   };
 }
 
@@ -452,9 +496,9 @@ function parseLocalEvents(savedEvents: string | null, categories: AgendaCategory
 
     return Object.entries(parsed).reduce<EventsByDate>((calendarEvents, [date, dayEvents]) => {
       if (Array.isArray(dayEvents)) {
-        calendarEvents[date] = dayEvents
-          .map((dayEvent) => normalizeStoredEvent(dayEvent, categories))
-          .sort((a, b) => a.time.localeCompare(b.time));
+        calendarEvents[date] = sortEvents(
+          dayEvents.map((dayEvent) => normalizeStoredEvent(dayEvent, categories)),
+        );
       }
 
       return calendarEvents;
@@ -474,23 +518,40 @@ function reminderToDatabase(hasReminder: boolean, reminderAt: string) {
 }
 
 function makeEventPayload(date: string, draft: EventDraft, categories: AgendaCategory[]) {
+  const isFree = draft.kind === "free";
+
   return {
     date,
-    title: draft.title,
-    event_time: draft.time,
-    category: getCategoryName(categories, draft.categoryId),
-    category_id: draft.categoryId,
+    kind: draft.kind,
+    title: isFree ? DEFAULT_FREE_NOTE_TITLE : draft.title,
+    event_time: isFree ? DEFAULT_FREE_NOTE_TIME : draft.time,
+    category: isFree ? CATEGORY_NAME_FALLBACK : getCategoryName(categories, draft.categoryId),
+    category_id: isFree ? null : draft.categoryId,
     notes: draft.notes,
     done: draft.done,
-    has_reminder: draft.hasReminder,
-    reminder_at: reminderToDatabase(draft.hasReminder, draft.reminderAt),
+    has_reminder: isFree ? false : draft.hasReminder,
+    reminder_at: isFree ? null : reminderToDatabase(draft.hasReminder, draft.reminderAt),
   };
 }
 
 function makeDraftForDate(event: CalendarEvent, date: string): EventDraft {
+  if (isFreeNote(event)) {
+    return {
+      kind: "free",
+      title: DEFAULT_FREE_NOTE_TITLE,
+      time: DEFAULT_FREE_NOTE_TIME,
+      categoryId: null,
+      notes: event.notes,
+      done: false,
+      hasReminder: false,
+      reminderAt: "",
+    };
+  }
+
   const reminderTime = event.reminderAt ? event.reminderAt.slice(11, 16) : event.time;
 
   return {
+    kind: "scheduled",
     title: event.title,
     time: event.time,
     categoryId: event.categoryId,
@@ -521,6 +582,7 @@ export default function Home() {
   const [isEditingCalendarName, setIsEditingCalendarName] = useState(false);
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [editorMode, setEditorMode] = useState<EditorMode>("hidden");
+  const [noteKind, setNoteKind] = useState<NoteKind>("scheduled");
   const [title, setTitle] = useState("");
   const [time, setTime] = useState("09:00");
   const [categoryId, setCategoryId] = useState<string | null>(DEFAULT_CATEGORIES[0].id);
@@ -748,6 +810,7 @@ export default function Home() {
 
       setEditingEventId(null);
       setEditorMode("hidden");
+      setNoteKind("scheduled");
       setTitle("");
       setTime("09:00");
       setCategoryId(getDefaultCategoryId(categoriesRef.current));
@@ -804,10 +867,13 @@ export default function Home() {
     setIsEditingCalendarName(false);
   }
 
-  function resetNoteForm() {
-    setTitle("");
-    setTime("09:00");
-    setCategoryId(getDefaultCategoryId(categories));
+  function resetNoteForm(kind: NoteKind = "scheduled") {
+    const isFree = kind === "free";
+
+    setNoteKind(kind);
+    setTitle(isFree ? DEFAULT_FREE_NOTE_TITLE : "");
+    setTime(isFree ? DEFAULT_FREE_NOTE_TIME : "09:00");
+    setCategoryId(isFree ? null : getDefaultCategoryId(categories));
     setIsCategoryMenuOpen(false);
     setEditingCategoryId(null);
     setCategoryMessage("");
@@ -816,10 +882,10 @@ export default function Home() {
     setReminderAt(defaultReminderAt(selectedDate));
   }
 
-  function startNewNote() {
+  function startNewNote(kind: NoteKind = "scheduled") {
     setEditingEventId(null);
     setEditorMode("create");
-    resetNoteForm();
+    resetNoteForm(kind);
   }
 
   function cancelEditor() {
@@ -831,6 +897,7 @@ export default function Home() {
   function fillEditor(calendarEvent: CalendarEvent) {
     setEditingEventId(calendarEvent.id);
     setEditorMode("edit");
+    setNoteKind(calendarEvent.kind);
     setTitle(calendarEvent.title);
     setTime(calendarEvent.time);
     setCategoryId(calendarEvent.categoryId);
@@ -839,7 +906,11 @@ export default function Home() {
     setCategoryMessage("");
     setNotes(calendarEvent.notes);
     setHasReminder(calendarEvent.hasReminder);
-    setReminderAt(calendarEvent.reminderAt || defaultReminderAt(selectedDate, calendarEvent.time));
+    setReminderAt(
+      isFreeNote(calendarEvent)
+        ? ""
+        : calendarEvent.reminderAt || defaultReminderAt(selectedDate, calendarEvent.time),
+    );
   }
 
   function toggleDuplicateWeekday(weekday: number) {
@@ -851,11 +922,31 @@ export default function Home() {
   }
 
   function buildDraft(done: boolean): EventDraft | null {
+    if (noteKind === "free") {
+      const trimmedNotes = notes.trim();
+
+      if (!trimmedNotes) {
+        return null;
+      }
+
+      return {
+        kind: "free",
+        title: DEFAULT_FREE_NOTE_TITLE,
+        time: DEFAULT_FREE_NOTE_TIME,
+        categoryId: null,
+        notes: trimmedNotes,
+        done,
+        hasReminder: false,
+        reminderAt: "",
+      };
+    }
+
     if (!title.trim()) {
       return null;
     }
 
     return {
+      kind: "scheduled",
       title: title.trim(),
       time,
       categoryId,
@@ -1450,80 +1541,133 @@ export default function Home() {
     return <span className="event-dot" key={calendarEvent.id} style={categoryStyle(item)} />;
   }
 
-  function renderNoteForm() {
+  function renderSavedNoteContent(calendarEvent: CalendarEvent) {
+    if (isFreeNote(calendarEvent)) {
+      return (
+        <>
+          <span className="saved-note-title-row">
+            <span className="note-kind-chip">Nota libre</span>
+          </span>
+          <span className="saved-note-text saved-note-text-main">
+            {calendarEvent.notes || "Sin contenido"}
+          </span>
+        </>
+      );
+    }
+
     return (
-      <form className="mt-4 flex flex-col gap-4" onSubmit={saveEvent}>
-        <label className="field-label">
-          Titulo
-          <input
-            autoFocus
-            className="field-input"
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            placeholder="Reunion, clase, tarea..."
-            required
-          />
-        </label>
+      <>
+        <span className="saved-note-title-row">
+          <span className="saved-note-title">{calendarEvent.title}</span>
+          {renderCategoryChip(calendarEvent.categoryId)}
+        </span>
+        <span className="saved-note-time">{calendarEvent.time}</span>
+        {calendarEvent.hasReminder && calendarEvent.reminderAt ? (
+          <span className="saved-note-reminder">
+            Aviso {formatReminder(calendarEvent.reminderAt)}
+          </span>
+        ) : null}
+        {calendarEvent.notes ? (
+          <span className="saved-note-text">{calendarEvent.notes}</span>
+        ) : null}
+      </>
+    );
+  }
 
-        <div className="grid grid-cols-2 gap-3">
+  function renderNoteForm() {
+    const isFree = noteKind === "free";
+
+    return (
+      <form className="note-form" onSubmit={saveEvent}>
+        {isFree ? (
           <label className="field-label">
-            Hora
-            <input
-              className="field-input"
-              type="time"
-              value={time}
-              onChange={(event) => {
-                setTime(event.target.value);
-
-                if (hasReminder && !reminderAt) {
-                  setReminderAt(defaultReminderAt(selectedDate, event.target.value));
-                }
-              }}
-            />
-          </label>
-
-          {renderCategoryPicker()}
-        </div>
-
-        <label className="field-label">
-          Notas
-          <textarea
-            className="field-input min-h-28 resize-y"
-            value={notes}
-            onChange={(event) => setNotes(event.target.value)}
-            placeholder="Detalles, lugar, pendientes..."
-          />
-        </label>
-
-        <label className="toggle-row">
-          <input
-            checked={hasReminder}
-            className="h-4 w-4 accent-[#44d7a8]"
-            type="checkbox"
-            onChange={(event) => {
-              const checked = event.target.checked;
-              setHasReminder(checked);
-
-              if (checked && !reminderAt) {
-                setReminderAt(defaultReminderAt(selectedDate, time));
-              }
-            }}
-          />
-          <span>Activar recordatorio</span>
-        </label>
-
-        {hasReminder ? (
-          <label className="field-label">
-            Fecha y hora de aviso
-            <input
-              className="field-input"
-              type="datetime-local"
-              value={reminderAt}
-              onChange={(event) => setReminderAt(event.target.value)}
+            Nota libre
+            <textarea
+              autoFocus
+              className="field-input min-h-32 resize-y"
+              value={notes}
+              onChange={(event) => setNotes(event.target.value)}
+              placeholder="Escribe lo que quieras recordar de este dia..."
               required
             />
           </label>
-        ) : null}
+        ) : (
+          <>
+            <div className="note-form-grid">
+              <label className="field-label note-title-field">
+                Titulo
+                <input
+                  autoFocus
+                  className="field-input"
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
+                  placeholder="Reunion, clase, tarea..."
+                  required
+                />
+              </label>
+
+              <label className="field-label">
+                Hora
+                <input
+                  className="field-input"
+                  type="time"
+                  value={time}
+                  onChange={(event) => {
+                    setTime(event.target.value);
+
+                    if (hasReminder && !reminderAt) {
+                      setReminderAt(defaultReminderAt(selectedDate, event.target.value));
+                    }
+                  }}
+                />
+              </label>
+
+              {renderCategoryPicker()}
+            </div>
+
+            <label className="field-label">
+              Notas
+              <textarea
+                className="field-input min-h-24 resize-y"
+                value={notes}
+                onChange={(event) => setNotes(event.target.value)}
+                placeholder="Detalles, lugar, pendientes..."
+              />
+            </label>
+
+            <div className="note-reminder-row">
+              <label className="toggle-row">
+                <input
+                  checked={hasReminder}
+                  className="h-4 w-4 accent-[#44d7a8]"
+                  type="checkbox"
+                  onChange={(event) => {
+                    const checked = event.target.checked;
+                    setHasReminder(checked);
+
+                    if (checked && !reminderAt) {
+                      setReminderAt(defaultReminderAt(selectedDate, time));
+                    }
+                  }}
+                />
+                <span>Recordatorio</span>
+              </label>
+
+              {hasReminder ? (
+                <label className="field-label">
+                  Aviso
+                  <input
+                    className="field-input"
+                    type="datetime-local"
+                    value={reminderAt}
+                    onChange={(event) => setReminderAt(event.target.value)}
+                    required
+                  />
+                </label>
+              ) : null}
+            </div>
+          </>
+        )}
 
         <div className="note-action-row">
           <button className="primary-button" disabled={dataLoading} type="submit">
@@ -1668,7 +1812,7 @@ export default function Home() {
                 </h2>
                 <p className="text-sm text-[#a7a29a]">
                   {viewMode === "month"
-                    ? "Selecciona un dia para editar su nota."
+                    ? "Selecciona un dia para ver o crear notas."
                     : "Revisa tus notas de la semana seleccionada."}
                 </p>
               </div>
@@ -1781,30 +1925,55 @@ export default function Home() {
                         {dayEvents.length === 0 ? (
                           <p className="empty-state compact">Sin nota</p>
                         ) : (
-                          dayEvents.map((calendarEvent) => (
-                            <article className="event-card compact" data-done={calendarEvent.done} key={calendarEvent.id}>
-                              <div className="min-w-0">
-                                <p className="truncate font-bold text-[#fffaf0]">{calendarEvent.title}</p>
-                                <p className="text-xs font-semibold text-[#a7a29a]">{calendarEvent.time}</p>
-                                {calendarEvent.hasReminder && calendarEvent.reminderAt ? (
-                                  <p className="mt-1 text-xs font-semibold text-[#ffd166]">
-                                    Aviso {formatReminder(calendarEvent.reminderAt)}
-                                  </p>
-                                ) : null}
-                                <div className="week-note-footer">
-                                  {renderCategoryChip(calendarEvent.categoryId)}
-                                  <button
-                                    className="success-button compact-action"
-                                    data-active={calendarEvent.done}
-                                    type="button"
-                                    onClick={() => toggleDone(key, calendarEvent.id)}
-                                  >
-                                    Realizado
-                                  </button>
+                          dayEvents.map((calendarEvent) => {
+                            const isFree = isFreeNote(calendarEvent);
+
+                            return (
+                              <article
+                                className="event-card compact"
+                                data-done={calendarEvent.done}
+                                key={calendarEvent.id}
+                              >
+                                <div className="min-w-0">
+                                  {isFree ? (
+                                    <p className="week-free-note">
+                                      {calendarEvent.notes || "Nota libre"}
+                                    </p>
+                                  ) : (
+                                    <>
+                                      <p className="truncate font-bold text-[#fffaf0]">
+                                        {calendarEvent.title}
+                                      </p>
+                                      <p className="text-xs font-semibold text-[#a7a29a]">
+                                        {calendarEvent.time}
+                                      </p>
+                                      {calendarEvent.hasReminder && calendarEvent.reminderAt ? (
+                                        <p className="mt-1 text-xs font-semibold text-[#ffd166]">
+                                          Aviso {formatReminder(calendarEvent.reminderAt)}
+                                        </p>
+                                      ) : null}
+                                    </>
+                                  )}
+
+                                  <div className="week-note-footer">
+                                    {isFree ? (
+                                      <span className="note-kind-chip">Libre</span>
+                                    ) : (
+                                      renderCategoryChip(calendarEvent.categoryId)
+                                    )}
+                                    <button
+                                      className="success-button compact-action"
+                                      data-active={calendarEvent.done}
+                                      type="button"
+                                      onClick={() => toggleDone(key, calendarEvent.id)}
+                                    >
+                                      Realizado
+                                    </button>
+                                  </div>
                                 </div>
-                              </div>
-                            </article>
-                          ))
+                              </article>
+                            );
+                          })
                         )}
                       </div>
                     </section>
@@ -1834,85 +2003,70 @@ export default function Home() {
                         data-selected={isSelectedNote}
                         key={calendarEvent.id}
                       >
-                        {isEditingNote ? (
-                          <>
-                            <div className="saved-note-edit-header">
-                              <div className="saved-note-actions horizontal">
-                                <button
-                                  className="success-button"
-                                  data-active={calendarEvent.done}
-                                  type="button"
-                                  onClick={() => toggleDone(selectedDate, calendarEvent.id)}
-                                >
-                                  Realizado
-                                </button>
-                                <button
-                                  className="danger-button"
-                                  type="button"
-                                  onClick={() => deleteEvent(selectedDate, calendarEvent.id)}
-                                >
-                                  Eliminar
-                                </button>
-                              </div>
+                        <div className="saved-note-row">
+                          {isEditingNote ? (
+                            <div className="saved-note-open saved-note-summary">
+                              {renderSavedNoteContent(calendarEvent)}
                             </div>
-
-                            {renderNoteForm()}
-                          </>
-                        ) : (
-                          <div className="saved-note-row">
+                          ) : (
                             <button
                               className="saved-note-open"
                               type="button"
                               onClick={() => fillEditor(calendarEvent)}
                             >
-                              <span className="saved-note-title-row">
-                                <span className="saved-note-title">{calendarEvent.title}</span>
-                                {renderCategoryChip(calendarEvent.categoryId)}
-                              </span>
-                              <span className="saved-note-time">{calendarEvent.time}</span>
-                              {calendarEvent.hasReminder && calendarEvent.reminderAt ? (
-                                <span className="saved-note-reminder">
-                                  Aviso {formatReminder(calendarEvent.reminderAt)}
-                                </span>
-                              ) : null}
-                              {calendarEvent.notes ? (
-                                <span className="saved-note-text">{calendarEvent.notes}</span>
-                              ) : null}
+                              {renderSavedNoteContent(calendarEvent)}
                             </button>
-                            <div className="saved-note-actions">
-                              <button
-                                className="success-button"
-                                data-active={calendarEvent.done}
-                                type="button"
-                                onClick={() => toggleDone(selectedDate, calendarEvent.id)}
-                              >
-                                Realizado
-                              </button>
-                              <button
-                                className="danger-button"
-                                type="button"
-                                onClick={() => deleteEvent(selectedDate, calendarEvent.id)}
-                              >
-                                Eliminar
-                              </button>
-                            </div>
+                          )}
+                          <div className="saved-note-actions">
+                            <button
+                              className="success-button"
+                              data-active={calendarEvent.done}
+                              type="button"
+                              onClick={() => toggleDone(selectedDate, calendarEvent.id)}
+                            >
+                              Realizado
+                            </button>
+                            <button
+                              className="danger-button"
+                              type="button"
+                              onClick={() => deleteEvent(selectedDate, calendarEvent.id)}
+                            >
+                              Eliminar
+                            </button>
                           </div>
-                        )}
+                        </div>
+
+                        {isEditingNote ? (
+                          <div className="saved-note-inline-editor">{renderNoteForm()}</div>
+                        ) : null}
                       </article>
                     );
                   })
                 )}
               </div>
 
-              <div className="mt-4">
-                <button className="secondary-button w-full" type="button" onClick={startNewNote}>
+              <div className="note-create-row mt-4">
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => startNewNote("scheduled")}
+                >
                   Nueva nota
+                </button>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => startNewNote("free")}
+                >
+                  Nota libre
                 </button>
               </div>
 
               {editorMode === "create" ? (
                 <div className="editor-panel mt-5">
-                  <h3 className="text-lg font-bold text-[#fffaf0]">Nueva nota</h3>
+                  <h3 className="text-lg font-bold text-[#fffaf0]">
+                    {noteKind === "free" ? "Nueva nota libre" : "Nueva nota"}
+                  </h3>
                   {renderNoteForm()}
                 </div>
               ) : null}

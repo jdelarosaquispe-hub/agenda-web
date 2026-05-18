@@ -285,6 +285,27 @@ button:disabled:hover {
   padding: 12px;
 }
 
+.note-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.note-form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 112px minmax(150px, 0.8fr);
+  gap: 10px;
+}
+
+.note-reminder-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.8fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: end;
+}
+
+.note-create-row,
 .note-action-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -616,6 +637,10 @@ button:disabled:hover {
   outline-offset: 4px;
 }
 
+.saved-note-summary {
+  cursor: default;
+}
+
 .saved-note-title-row {
   display: flex;
   flex-wrap: wrap;
@@ -649,6 +674,21 @@ button:disabled:hover {
   white-space: pre-line;
 }
 
+.saved-note-text-main {
+  color: #fffaf0;
+  font-weight: 800;
+}
+
+.note-kind-chip {
+  border: 1px solid #3b372f;
+  border-radius: 999px;
+  background: #151411;
+  color: #44d7a8;
+  font-size: 11px;
+  font-weight: 900;
+  padding: 3px 8px;
+}
+
 .saved-note-actions {
   display: flex;
   flex-direction: column;
@@ -667,6 +707,12 @@ button:disabled:hover {
   gap: 12px;
 }
 
+.saved-note-inline-editor {
+  border-top: 1px solid #34312b;
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
 .week-note-footer {
   display: flex;
   flex-wrap: wrap;
@@ -674,6 +720,15 @@ button:disabled:hover {
   justify-content: space-between;
   gap: 8px;
   margin-top: 10px;
+}
+
+.week-free-note {
+  color: #fffaf0;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
 }
 
 .empty-state {
@@ -784,7 +839,13 @@ button:disabled:hover {
     width: calc(100vw - 32px);
   }
 
+  .note-form-grid,
+  .note-reminder-row,
   .note-action-row {
+    grid-template-columns: 1fr;
+  }
+
+  .note-create-row {
     grid-template-columns: 1fr;
   }
 
