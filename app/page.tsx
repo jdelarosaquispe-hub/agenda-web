@@ -1580,17 +1580,15 @@ export default function Home() {
     return (
       <form className="note-form" onSubmit={saveEvent}>
         {isFree ? (
-          <label className="field-label">
-            Nota libre
-            <textarea
-              autoFocus
-              className="field-input min-h-32 resize-y"
-              value={notes}
-              onChange={(event) => setNotes(event.target.value)}
-              placeholder="Escribe lo que quieras recordar de este dia..."
-              required
-            />
-          </label>
+          <textarea
+            aria-label="Nota libre"
+            autoFocus
+            className="field-input min-h-32 resize-y"
+            value={notes}
+            onChange={(event) => setNotes(event.target.value)}
+            placeholder="Escribe lo que quieras recordar de este dia..."
+            required
+          />
         ) : (
           <>
             <div className="note-form-grid">
@@ -2064,9 +2062,9 @@ export default function Home() {
 
               {editorMode === "create" ? (
                 <div className="editor-panel mt-5">
-                  <h3 className="text-lg font-bold text-[#fffaf0]">
-                    {noteKind === "free" ? "Nueva nota libre" : "Nueva nota"}
-                  </h3>
+                  {noteKind === "free" ? null : (
+                    <h3 className="text-lg font-bold text-[#fffaf0]">Nueva nota</h3>
+                  )}
                   {renderNoteForm()}
                 </div>
               ) : null}
