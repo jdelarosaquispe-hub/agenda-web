@@ -1544,14 +1544,9 @@ export default function Home() {
   function renderSavedNoteContent(calendarEvent: CalendarEvent) {
     if (isFreeNote(calendarEvent)) {
       return (
-        <>
-          <span className="saved-note-title-row">
-            <span className="note-kind-chip">Nota libre</span>
-          </span>
-          <span className="saved-note-text saved-note-text-main">
-            {calendarEvent.notes || "Sin contenido"}
-          </span>
-        </>
+        <span className="saved-note-text saved-note-text-main">
+          {calendarEvent.notes || "Sin contenido"}
+        </span>
       );
     }
 
@@ -1935,7 +1930,7 @@ export default function Home() {
                                 <div className="min-w-0">
                                   {isFree ? (
                                     <p className="week-free-note">
-                                      {calendarEvent.notes || "Nota libre"}
+                                      {calendarEvent.notes || "Sin contenido"}
                                     </p>
                                   ) : (
                                     <>
@@ -1954,11 +1949,7 @@ export default function Home() {
                                   )}
 
                                   <div className="week-note-footer">
-                                    {isFree ? (
-                                      <span className="note-kind-chip">Libre</span>
-                                    ) : (
-                                      renderCategoryChip(calendarEvent.categoryId)
-                                    )}
+                                    {isFree ? null : renderCategoryChip(calendarEvent.categoryId)}
                                     <button
                                       className="success-button compact-action"
                                       data-active={calendarEvent.done}
